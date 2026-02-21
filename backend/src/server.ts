@@ -7,8 +7,18 @@ import axios from 'axios';
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 
 dotenv.config();
+
+const AI_SERVICE_HOST = process.env.AI_SERVICE_HOST?.trim() || 'localhost';
+const AI_SERVICE_PORT = process.env.AI_SERVICE_PORT?.trim() || '8000';
+const AI_SERVICE_URL = process.env.AI_SERVICE_URL?.trim() || `http://${AI_SERVICE_HOST}:${AI_SERVICE_PORT}`;
+const UPLOADS_DIR = path.resolve('uploads');
+
+if (!fs.existsSync(UPLOADS_DIR)) {
+    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
 
 const app = express();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -16,7 +26,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 // Multer configuration for file uploads
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        cb(null, 'uploads/');
+        cb(null, UPLOADS_DIR);
     },
     filename: (req, file, cb) => {
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -199,13 +209,17 @@ const result = await pool.query(
         // Call Python AI service to index the document
 try {
     const absolutePath = path.resolve(filePath);
-const provider = req.body.provider || 'groq';  // Get provider from request
+const provider = req.body.provider || 'groq';
+const model = req.body.model || null;
+const embedding_model = req.body.embedding_model || null;
 const aiResponse = await axios.post(
-    `${process.env.AI_SERVICE_URL}/ai/index-document`,
+    `${AI_SERVICE_URL}/ai/index-document`,
     {
         document_id: documentId,
         file_path: absolutePath,
-        provider: provider  // ← Pass provider
+        provider: provider,
+        model: model,
+        embedding_model: embedding_model
     },
                 { timeout: 120000 } // 2 minute timeout for large documents
             );
@@ -342,6 +356,39 @@ app.get('/conversations/:id/messages', authMiddleware, async (req: AuthRequest, 
 
 // ============ CHAT ENDPOINT ============
 
+// Simple chat endpoint (frontend compatibility)
+app.post('/chat/answer', authMiddleware, async (req: AuthRequest, res: Response) => {
+    const userId = req.userId!;
+    const { question, document_ids, provider, model } = req.body;
+
+    if (!question) {
+        return res.status(400).json({ error: 'question required' });
+    }
+
+    try {
+        const aiResponse = await axios.post(
+            `${AI_SERVICE_URL}/ai/rag-answer`,
+            {
+                user_id: userId,
+                question,
+                document_ids: document_ids || null,
+                provider: provider || 'groq',
+                model: model || null
+            },
+            { timeout: 60000 }
+        );
+
+        const { answer, sources } = aiResponse.data as any;
+        res.json({ answer, sources });
+    } catch (error: any) {
+        console.error('Chat answer error:', error.response?.data || error.message);
+        res.status(500).json({
+            error: 'Failed to process chat',
+            details: error.response?.data?.detail || error.message
+        });
+    }
+});
+
 // Send message and get AI response
 app.post('/chat/send', authMiddleware, async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
@@ -372,13 +419,15 @@ app.post('/chat/send', authMiddleware, async (req: AuthRequest, res: Response) =
         
         // Call Python AI service for RAG answer
         const provider = req.body.provider || 'groq';
+        const model = req.body.model || null;
 const aiResponse = await axios.post(
-    `${process.env.AI_SERVICE_URL}/ai/rag-answer`,
+    `${AI_SERVICE_URL}/ai/rag-answer`,
     {
         user_id: userId,
         question: question,
         document_ids: document_ids || null,
-        provider: provider
+        provider: provider,
+        model: model
     },
             { timeout: 60000 } // 1 minute timeout
         );
@@ -419,7 +468,7 @@ app.post('/videos/info', authMiddleware, async (req: AuthRequest, res: Response)
     
     try {
         const aiResponse = await axios.post(
-            `${process.env.AI_SERVICE_URL}/ai/video-info`,
+            `${AI_SERVICE_URL}/ai/video-info`,
             { youtube_url }
         );
         
@@ -432,7 +481,7 @@ app.post('/videos/info', authMiddleware, async (req: AuthRequest, res: Response)
 
 // Upload YouTube video
 app.post('/videos/upload', authMiddleware, async (req: AuthRequest, res: Response) => {
-    const { youtube_url, title, subject, year, provider, chunking_strategy } = req.body;
+    const { youtube_url, title, subject, year, provider, model, embedding_model, chunking_strategy } = req.body;
     const userId = req.userId!;
     
     if (!youtube_url) {
@@ -455,11 +504,13 @@ app.post('/videos/upload', authMiddleware, async (req: AuthRequest, res: Respons
         // Call Python AI service to ingest video
         try {
             const aiResponse = await axios.post<VideoIngestResponse>(
-                `${process.env.AI_SERVICE_URL}/ai/ingest-youtube`,
+                `${AI_SERVICE_URL}/ai/ingest-youtube`,
                 {
                     video_id: videoId,
                     youtube_url: youtube_url,
                     provider: provider || 'groq',
+                    model: model || null,
+                    embedding_model: embedding_model || null,
                     chunking_strategy: chunking_strategy || 'fixed_size',
                     chunking_params: req.body.chunking_params || {}
                 },
@@ -498,7 +549,7 @@ app.get('/videos', authMiddleware, async (req: AuthRequest, res: Response) => {
     
     try {
         const result = await pool.query(
-            'SELECT id, title, youtube_url, duration, subject, year, uploaded_at FROM videos WHERE user_id = $1 ORDER BY uploaded_at DESC',
+            'SELECT id, title, youtube_url, NULL::text AS duration, subject, year, created_at AS uploaded_at FROM videos WHERE user_id = $1 ORDER BY created_at DESC',
             [userId]
         );
         
@@ -669,21 +720,23 @@ app.post('/quiz/generate', authMiddleware, async (req: AuthRequest, res: Respons
         question_count,
         difficulty,
         question_types,
-        provider
+        provider,
+        model
     } = req.body;
     
     try {
         console.log('Generating quiz...');
         
         const aiResponse = await axios.post<GenerateQuizResponse>(
-            `${process.env.AI_SERVICE_URL}/ai/generate-quiz`,
+            `${AI_SERVICE_URL}/ai/generate-quiz`,
             {
                 document_ids,
                 video_ids,
                 question_count: question_count || 5,
                 difficulty: difficulty || 'medium',
                 question_types: question_types || ['multiple_choice'],
-                provider: provider || 'groq'
+                provider: provider || 'groq',
+                model: model || null
             },
             { timeout: 120000 }  // 2 minute timeout
         );
@@ -709,14 +762,15 @@ app.post('/assessments/create', authMiddleware, async (req: AuthRequest, res: Re
         question_count,
         difficulty,
         question_types,
-        provider
+        provider,
+        model
     } = req.body;
     
     try {
         console.log(`Creating assessment: ${title}`);
         
         const aiResponse = await axios.post<CreateAssessmentResponse>(
-            `${process.env.AI_SERVICE_URL}/ai/create-assessment`,
+            `${AI_SERVICE_URL}/ai/create-assessment`,
             {
                 title,
                 document_ids,
@@ -724,7 +778,8 @@ app.post('/assessments/create', authMiddleware, async (req: AuthRequest, res: Re
                 question_count: question_count || 10,
                 difficulty: difficulty || 'medium',
                 question_types: question_types || ['multiple_choice'],
-                provider: provider || 'groq'
+                provider: provider || 'groq',
+                model: model || null
             },
             { timeout: 180000 }  // 3 minute timeout
         );
@@ -812,7 +867,7 @@ app.post('/assessments/:id/submit', authMiddleware, async (req: AuthRequest, res
         
         // Call AI service to grade
         const aiResponse = await axios.post<SubmitAssessmentResponse>(
-            `${process.env.AI_SERVICE_URL}/ai/submit-assessment`,
+            `${AI_SERVICE_URL}/ai/submit-assessment`,
             {
                 assessment_id: assessmentId,
                 answers: answers
@@ -834,15 +889,16 @@ app.post('/assessments/:id/submit', authMiddleware, async (req: AuthRequest, res
 
 // Grade individual answer
 app.post('/quiz/grade-answer', authMiddleware, async (req: AuthRequest, res: Response) => {
-    const { question_id, student_answer, provider } = req.body;
+    const { question_id, student_answer, provider, model } = req.body;
     
     try {
         const aiResponse = await axios.post(
-            `${process.env.AI_SERVICE_URL}/ai/grade-answer`,
+            `${AI_SERVICE_URL}/ai/grade-answer`,
             {
                 question_id,
                 student_answer,
-                provider: provider || 'groq'
+                provider: provider || 'groq',
+                model: model || null
             }
         );
         
@@ -943,7 +999,7 @@ app.post('/admin/tenants', authMiddleware, async (req: AuthRequest, res: Respons
     
     try {
         const aiResponse = await axios.post(
-            `${process.env.AI_SERVICE_URL}/ai/tenants/create`,
+            `${AI_SERVICE_URL}/ai/tenants/create`,
             {
                 name,
                 domain,
@@ -969,7 +1025,7 @@ app.get('/admin/tenants', authMiddleware, async (req: AuthRequest, res: Response
     
     try {
         const aiResponse = await axios.get(
-            `${process.env.AI_SERVICE_URL}/ai/tenants`,
+            `${AI_SERVICE_URL}/ai/tenants`,
             { params: { include_inactive: include_inactive === 'true' } }
         );
         
@@ -986,7 +1042,7 @@ app.get('/admin/tenants/:id', authMiddleware, async (req: AuthRequest, res: Resp
     
     try {
         const aiResponse = await axios.get(
-            `${process.env.AI_SERVICE_URL}/ai/tenants/${tenantId}`
+            `${AI_SERVICE_URL}/ai/tenants/${tenantId}`
         );
         
         res.json(aiResponse.data);
@@ -1005,7 +1061,7 @@ app.put('/admin/tenants/:id', authMiddleware, async (req: AuthRequest, res: Resp
     
     try {
         const aiResponse = await axios.put(
-            `${process.env.AI_SERVICE_URL}/ai/tenants/${tenantId}`,
+            `${AI_SERVICE_URL}/ai/tenants/${tenantId}`,
             updates
         );
         
@@ -1022,7 +1078,7 @@ app.delete('/admin/tenants/:id', authMiddleware, async (req: AuthRequest, res: R
     
     try {
         const aiResponse = await axios.delete(
-            `${process.env.AI_SERVICE_URL}/ai/tenants/${tenantId}`
+            `${AI_SERVICE_URL}/ai/tenants/${tenantId}`
         );
         
         res.json(aiResponse.data);
@@ -1038,7 +1094,7 @@ app.get('/admin/tenants/:id/users', authMiddleware, async (req: AuthRequest, res
     
     try {
         const aiResponse = await axios.get(
-            `${process.env.AI_SERVICE_URL}/ai/tenants/${tenantId}/users`
+            `${AI_SERVICE_URL}/ai/tenants/${tenantId}/users`
         );
         
         res.json(aiResponse.data);
@@ -1055,7 +1111,7 @@ app.post('/admin/invitations', authMiddleware, async (req: AuthRequest, res: Res
     
     try {
         const aiResponse = await axios.post(
-            `${process.env.AI_SERVICE_URL}/ai/tenants/invite`,
+            `${AI_SERVICE_URL}/ai/tenants/invite`,
             {
                 tenant_id,
                 email,
@@ -1077,7 +1133,7 @@ app.get('/admin/tenants/:id/limits', authMiddleware, async (req: AuthRequest, re
     
     try {
         const aiResponse = await axios.get(
-            `${process.env.AI_SERVICE_URL}/ai/tenants/${tenantId}/usage-limits`
+            `${AI_SERVICE_URL}/ai/tenants/${tenantId}/usage-limits`
         );
         
         res.json(aiResponse.data);
@@ -1097,7 +1153,7 @@ app.get('/admin/analytics/overview/:tenantId', authMiddleware, async (req: AuthR
         console.log(`Fetching analytics for tenant ${tenantId}`);
         
         const aiResponse = await axios.get(
-            `${process.env.AI_SERVICE_URL}/ai/analytics/overview/${tenantId}`
+            `${AI_SERVICE_URL}/ai/analytics/overview/${tenantId}`
         );
         
         res.json(aiResponse.data);
@@ -1114,7 +1170,7 @@ app.get('/admin/analytics/trends/:tenantId', authMiddleware, async (req: AuthReq
     
     try {
         const aiResponse = await axios.get(
-            `${process.env.AI_SERVICE_URL}/ai/analytics/trends/${tenantId}`,
+            `${AI_SERVICE_URL}/ai/analytics/trends/${tenantId}`,
             { params: { days } }
         );
         
@@ -1132,7 +1188,7 @@ app.get('/admin/analytics/users/:tenantId', authMiddleware, async (req: AuthRequ
     
     try {
         const aiResponse = await axios.get(
-            `${process.env.AI_SERVICE_URL}/ai/analytics/users/${tenantId}`,
+            `${AI_SERVICE_URL}/ai/analytics/users/${tenantId}`,
             { params: { limit } }
         );
         
@@ -1150,7 +1206,7 @@ app.get('/admin/analytics/documents/:tenantId', authMiddleware, async (req: Auth
     
     try {
         const aiResponse = await axios.get(
-            `${process.env.AI_SERVICE_URL}/ai/analytics/documents/${tenantId}`,
+            `${AI_SERVICE_URL}/ai/analytics/documents/${tenantId}`,
             { params: { limit } }
         );
         
@@ -1167,7 +1223,7 @@ app.get('/admin/analytics/health/:tenantId', authMiddleware, async (req: AuthReq
     
     try {
         const aiResponse = await axios.get(
-            `${process.env.AI_SERVICE_URL}/ai/analytics/health/${tenantId}`
+            `${AI_SERVICE_URL}/ai/analytics/health/${tenantId}`
         );
         
         res.json(aiResponse.data);
@@ -1186,7 +1242,7 @@ app.get('/admin/analytics/report/:tenantId', authMiddleware, async (req: AuthReq
         console.log(`Generating ${reportType} report for tenant ${tenantId}`);
         
         const aiResponse = await axios.get(
-            `${process.env.AI_SERVICE_URL}/ai/analytics/report/${tenantId}`,
+            `${AI_SERVICE_URL}/ai/analytics/report/${tenantId}`,
             { params: { report_type: reportType } }
         );
         
@@ -1203,7 +1259,7 @@ app.get('/admin/analytics/report/:tenantId', authMiddleware, async (req: AuthReq
 app.get('/embeddings/providers', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
         const aiResponse = await axios.get(
-            `${process.env.AI_SERVICE_URL}/ai/embeddings/providers`
+            `${AI_SERVICE_URL}/ai/embeddings/providers`
         );
         
         res.json(aiResponse.data);
@@ -1219,7 +1275,7 @@ app.get('/embeddings/recommendations', authMiddleware, async (req: AuthRequest, 
     
     try {
         const aiResponse = await axios.get(
-            `${process.env.AI_SERVICE_URL}/ai/embeddings/recommendations`,
+            `${AI_SERVICE_URL}/ai/embeddings/recommendations`,
             { params: { use_case: useCase } }
         );
         
@@ -1240,7 +1296,7 @@ app.post('/embeddings/test', authMiddleware, async (req: AuthRequest, res: Respo
     
     try {
         const aiResponse = await axios.post(
-            `${process.env.AI_SERVICE_URL}/ai/embeddings/test`,
+            `${AI_SERVICE_URL}/ai/embeddings/test`,
             { text, provider, model },
             { params: { text, provider, model } }
         );
@@ -1265,7 +1321,7 @@ app.post('/embeddings/compare', authMiddleware, async (req: AuthRequest, res: Re
     
     try {
         const aiResponse = await axios.post(
-            `${process.env.AI_SERVICE_URL}/ai/embeddings/compare`,
+            `${AI_SERVICE_URL}/ai/embeddings/compare`,
             { text, providers },
             { params: { text, providers } }
         );
@@ -1283,7 +1339,7 @@ app.post('/embeddings/compare', authMiddleware, async (req: AuthRequest, res: Re
 app.get('/vector-stores/list', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
         const aiResponse = await axios.get(
-            `${process.env.AI_SERVICE_URL}/ai/vector-stores`
+            `${AI_SERVICE_URL}/ai/vector-stores`
         );
         
         res.json(aiResponse.data);
@@ -1299,7 +1355,7 @@ app.post('/vector-stores/test', authMiddleware, async (req: AuthRequest, res: Re
     
     try {
         const aiResponse = await axios.post(
-            `${process.env.AI_SERVICE_URL}/ai/test-vector-store`,
+            `${AI_SERVICE_URL}/ai/test-vector-store`,
             null,
             {
                 params: {
@@ -1326,7 +1382,7 @@ app.post('/vector-stores/compare', authMiddleware, async (req: AuthRequest, res:
     
     try {
         const aiResponse = await axios.post(
-            `${process.env.AI_SERVICE_URL}/ai/compare-vector-stores`,
+            `${AI_SERVICE_URL}/ai/compare-vector-stores`,
             {
                 stores: stores || ['faiss', 'chromadb', 'qdrant_memory'],
                 dimension: dimension || 384,
@@ -1350,7 +1406,7 @@ app.post('/vector-stores/compare', authMiddleware, async (req: AuthRequest, res:
 app.get('/llms/providers', authMiddleware, async (req: AuthRequest, res: Response) => {
     try {
         const aiResponse = await axios.get(
-            `${process.env.AI_SERVICE_URL}/ai/llm-providers`
+            `${AI_SERVICE_URL}/ai/llm-providers`
         );
         
         res.json(aiResponse.data);
@@ -1366,7 +1422,7 @@ app.post('/llms/test', authMiddleware, async (req: AuthRequest, res: Response) =
     
     try {
         const aiResponse = await axios.post(
-            `${process.env.AI_SERVICE_URL}/ai/test-llm`,
+            `${AI_SERVICE_URL}/ai/test-llm`,
             null,
             {
                 params: {
@@ -1393,7 +1449,7 @@ app.post('/llms/compare', authMiddleware, async (req: AuthRequest, res: Response
     
     try {
         const aiResponse = await axios.post(
-            `${process.env.AI_SERVICE_URL}/ai/compare-llms`,
+            `${AI_SERVICE_URL}/ai/compare-llms`,
             {
                 providers: providers || ['groq', 'openai', 'claude'],
                 prompt: prompt || 'Explain quantum computing in one sentence.'
@@ -1416,5 +1472,5 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
     console.log(`✅ Backend server running on http://localhost:${PORT}`);
-    console.log(`✅ AI Service URL: ${process.env.AI_SERVICE_URL}`);
+    console.log(`✅ AI Service URL: ${AI_SERVICE_URL}`);
 });

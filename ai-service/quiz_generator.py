@@ -33,6 +33,18 @@ class QuizGenerator:
         """
         self.openai_client = openai_client
         self.groq_client = groq_client
+
+    def _resolve_provider_and_model(self, provider: str) -> tuple[str, str]:
+        selected = (provider or "groq").strip()
+        selected_lower = selected.lower()
+
+        if selected_lower.startswith("gpt-") or selected_lower.startswith(("o1", "o3", "o4")):
+            return "openai", selected
+        if selected_lower == "openai":
+            return "openai", "gpt-4.1-mini"
+        if selected_lower == "groq":
+            return "groq", "llama-3.3-70b-versatile"
+        return selected_lower, selected
     
     def generate_quiz(
         self,
@@ -66,11 +78,13 @@ class QuizGenerator:
             question_types
         )
         
+        resolved_provider, resolved_model = self._resolve_provider_and_model(provider)
+
         # Generate quiz using LLM
-        if provider == "openai" and self.openai_client:
-            response = self._generate_with_openai(prompt)
-        elif provider == "groq" and self.groq_client:
-            response = self._generate_with_groq(prompt)
+        if resolved_provider == "openai" and self.openai_client:
+            response = self._generate_with_openai(prompt, model=resolved_model)
+        elif resolved_provider == "groq" and self.groq_client:
+            response = self._generate_with_groq(prompt, model=resolved_model)
         else:
             raise ValueError(f"Provider {provider} not available")
         
@@ -130,22 +144,11 @@ Requirements:
 
 Return ONLY valid JSON, no other text."""
 
-        if provider == "openai" and self.openai_client:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                max_tokens=2000
-            )
-            result = response.choices[0].message.content
-        elif provider == "groq" and self.groq_client:
-            response = self.groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                max_tokens=2000
-            )
-            result = response.choices[0].message.content
+        resolved_provider, resolved_model = self._resolve_provider_and_model(provider)
+        if resolved_provider == "openai" and self.openai_client:
+            result = self._generate_with_openai(prompt, model=resolved_model, temperature=0.7, max_tokens=2000)
+        elif resolved_provider == "groq" and self.groq_client:
+            result = self._generate_with_groq(prompt, model=resolved_model, temperature=0.7, max_tokens=2000)
         else:
             raise ValueError(f"Provider {provider} not available")
         
@@ -198,20 +201,11 @@ Requirements:
 
 Return ONLY valid JSON."""
 
-        if provider == "openai" and self.openai_client:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7
-            )
-            result = response.choices[0].message.content
-        elif provider == "groq" and self.groq_client:
-            response = self.groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7
-            )
-            result = response.choices[0].message.content
+        resolved_provider, resolved_model = self._resolve_provider_and_model(provider)
+        if resolved_provider == "openai" and self.openai_client:
+            result = self._generate_with_openai(prompt, model=resolved_model, temperature=0.7)
+        elif resolved_provider == "groq" and self.groq_client:
+            result = self._generate_with_groq(prompt, model=resolved_model, temperature=0.7)
         else:
             raise ValueError(f"Provider {provider} not available")
         
@@ -263,20 +257,11 @@ Requirements:
 
 Return ONLY valid JSON."""
 
-        if provider == "openai" and self.openai_client:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7
-            )
-            result = response.choices[0].message.content
-        elif provider == "groq" and self.groq_client:
-            response = self.groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7
-            )
-            result = response.choices[0].message.content
+        resolved_provider, resolved_model = self._resolve_provider_and_model(provider)
+        if resolved_provider == "openai" and self.openai_client:
+            result = self._generate_with_openai(prompt, model=resolved_model, temperature=0.7)
+        elif resolved_provider == "groq" and self.groq_client:
+            result = self._generate_with_groq(prompt, model=resolved_model, temperature=0.7)
         else:
             raise ValueError(f"Provider {provider} not available")
         
@@ -359,20 +344,11 @@ Grading criteria:
 
 Be fair but constructive. Return ONLY valid JSON."""
 
-        if provider == "openai" and self.openai_client:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3  # Lower temperature for consistent grading
-            )
-            result = response.choices[0].message.content
-        elif provider == "groq" and self.groq_client:
-            response = self.groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3
-            )
-            result = response.choices[0].message.content
+        resolved_provider, resolved_model = self._resolve_provider_and_model(provider)
+        if resolved_provider == "openai" and self.openai_client:
+            result = self._generate_with_openai(prompt, model=resolved_model, temperature=0.3)
+        elif resolved_provider == "groq" and self.groq_client:
+            result = self._generate_with_groq(prompt, model=resolved_model, temperature=0.3)
         else:
             raise ValueError(f"Provider {provider} not available")
         
@@ -444,23 +420,55 @@ Return ONLY valid JSON."""
         
         return prompt
     
-    def _generate_with_openai(self, prompt: str) -> str:
+    def _generate_with_openai(
+        self,
+        prompt: str,
+        model: str = "gpt-4.1-mini",
+        temperature: float = 0.7,
+        max_tokens: int = 3000
+    ) -> str:
         """Generate using OpenAI"""
+        if model.startswith("gpt-5") and hasattr(self.openai_client, "responses"):
+            response = self.openai_client.responses.create(
+                model=model,
+                input=[{"role": "user", "content": prompt}],
+                temperature=temperature,
+                max_output_tokens=max_tokens
+            )
+            output_text = getattr(response, "output_text", None)
+            if output_text:
+                return output_text
+            for item in getattr(response, "output", []) or []:
+                for content_item in getattr(item, "content", []) or []:
+                    text = getattr(content_item, "text", None)
+                    if text:
+                        return text
+            raise ValueError("No text content returned by OpenAI response")
+
+        if model.startswith("gpt-5") and not hasattr(self.openai_client, "responses"):
+            raise ValueError("OpenAI SDK does not support responses API. Upgrade `openai` package for GPT-5.")
+
         response = self.openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model=model,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=3000
+            temperature=temperature,
+            max_tokens=max_tokens
         )
         return response.choices[0].message.content
     
-    def _generate_with_groq(self, prompt: str) -> str:
+    def _generate_with_groq(
+        self,
+        prompt: str,
+        model: str = "llama-3.3-70b-versatile",
+        temperature: float = 0.7,
+        max_tokens: int = 3000
+    ) -> str:
         """Generate using Groq"""
         response = self.groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=model,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=3000
+            temperature=temperature,
+            max_tokens=max_tokens
         )
         return response.choices[0].message.content
     

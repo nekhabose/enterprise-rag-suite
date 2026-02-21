@@ -1,6 +1,8 @@
 # env and secrets
 .env
 .env.*
+!.env.example
+!**/.env.example
 *.key
 *.pem
 *.p12
@@ -24,6 +26,8 @@ venv/
 # build outputs
 dist/
 build/
+backend/uploads/
+*.backup
 
 # OS / IDE
 .DS_Store

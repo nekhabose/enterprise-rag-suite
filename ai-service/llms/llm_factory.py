@@ -57,13 +57,20 @@ class LLMFactory:
         from .gemini_llm import GeminiLLM
         from .together_llm import TogetherLLM
         from .cohere_llm import CohereLLM
+
+        provider = provider.strip()
+        if provider.startswith(("gpt-", "o1", "o3", "o4")):
+            model = model or provider
+            provider = "openai"
+        elif provider == "openai" and model is None:
+            model = "gpt-4.1-mini"
         
         # LLM mapping with default models
         llms = {
             # OpenAI
             "openai": lambda **kw: OpenAILLM(
                 client=openai_client,
-                model=model or "gpt-3.5-turbo",
+                model=model or "gpt-4.1-mini",
                 **kw
             ),
             "gpt-3.5": lambda **kw: OpenAILLM(
@@ -215,9 +222,15 @@ class LLMFactory:
         """
         return {
             # OpenAI
-            "openai": "OpenAI GPT-3.5-turbo (default)",
+            "openai": "OpenAI GPT-4.1-mini (default)",
+            "gpt-4.1": "OpenAI GPT-4.1",
+            "gpt-4.1-mini": "OpenAI GPT-4.1-mini",
+            "gpt-4.1-nano": "OpenAI GPT-4.1-nano",
+            "gpt-5": "OpenAI GPT-5",
+            "gpt-5-mini": "OpenAI GPT-5-mini",
+            "gpt-5-nano": "OpenAI GPT-5-nano",
             "gpt-3.5": "OpenAI GPT-3.5-turbo",
-            "gpt-4": "OpenAI GPT-4",
+            "gpt-4": "OpenAI GPT-4 (legacy alias)",
             "gpt-4-turbo": "OpenAI GPT-4 Turbo",
             
             # Groq

@@ -2,11 +2,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import psycopg2
-from psycopg2.extras import execute_values, RealDictCursor
+from psycopg2.extras import execute_values, RealDictCursor, Json
 import PyPDF2
 import os
 from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
+from pathlib import Path
 
 # Phase 2 imports
 from video_processor import video_processor
@@ -28,14 +29,27 @@ from vector_stores import VectorStoreFactory
 # Phase 7 imports
 from llms import LLMFactory
 
-load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR.parent / "backend" / ".env")
+
+FRONTEND_PORT = os.getenv("FRONTEND_PORT", "3001")
+FRONTEND_URL = os.getenv("FRONTEND_URL", f"http://localhost:{FRONTEND_PORT}")
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", FRONTEND_URL).split(",")
+    if origin.strip()
+]
+AI_SERVICE_HOST = os.getenv("AI_SERVICE_HOST", "0.0.0.0")
+AI_SERVICE_PORT = int(os.getenv("AI_SERVICE_PORT", os.getenv("PORT", "8000")))
+TARGET_EMBEDDING_DIM = 1536
 
 app = FastAPI()
 
 # Allow requests from React frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3001"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -49,7 +63,7 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY")  # Phase 5
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost:5432/edu_platform")
 
 # Initialize clients (only if keys are provided)
 openai_client = None
@@ -96,6 +110,8 @@ class IndexDocumentRequest(BaseModel):
     document_id: int
     file_path: str
     provider: str = "groq"
+    model: Optional[str] = None
+    embedding_model: Optional[str] = None
     chunking_strategy: str = "fixed_size"
     chunking_params: dict = {}
     pdf_mode: str = "standard"  # Phase 2: standard, academic, advanced
@@ -105,12 +121,15 @@ class RAGAnswerRequest(BaseModel):
     question: str
     document_ids: Optional[List[int]] = None
     provider: str = "groq"
+    model: Optional[str] = None
 
 # Phase 2: YouTube Video Ingestion
 class IngestYouTubeRequest(BaseModel):
     video_id: int
     youtube_url: str
     provider: str = "groq"
+    model: Optional[str] = None
+    embedding_model: Optional[str] = None
     chunking_strategy: str = "fixed_size"
     chunking_params: dict = {}
 
@@ -126,11 +145,13 @@ class GenerateQuizRequest(BaseModel):
     difficulty: str = "medium"  # easy, medium, hard
     question_types: List[str] = ["multiple_choice", "true_false", "short_answer"]
     provider: str = "groq"
+    model: Optional[str] = None
 
 class GradeAnswerRequest(BaseModel):
     question_id: int
     student_answer: str
     provider: str = "groq"
+    model: Optional[str] = None
 
 class CreateAssessmentRequest(BaseModel):
     title: str
@@ -140,6 +161,7 @@ class CreateAssessmentRequest(BaseModel):
     difficulty: str = "medium"
     question_types: List[str] = ["multiple_choice"]
     provider: str = "groq"
+    model: Optional[str] = None
 
 class SubmitAssessmentRequest(BaseModel):
     assessment_id: int
@@ -226,10 +248,79 @@ def simple_text_embedding(text: str) -> List[float]:
     
     return embedding
 
+def resolve_provider_and_model(
+    provider: str = "groq",
+    model: Optional[str] = None
+) -> tuple[str, Optional[str]]:
+    """
+    Normalize provider/model inputs.
+    Accepts provider aliases like 'gpt-4.1' and 'gpt-5' directly.
+    """
+    raw_provider = (provider or "groq").strip()
+    explicit_model = (model or "").strip() or None
+    normalized_provider = raw_provider.lower()
+
+    if normalized_provider.startswith("gpt-") or normalized_provider.startswith(("o1", "o3", "o4")):
+        return "openai", explicit_model or raw_provider
+
+    return normalized_provider, explicit_model
+
+def resolve_embedding_target(
+    provider: str,
+    resolved_model: Optional[str],
+    embedding_model: Optional[str]
+) -> tuple[str, Optional[str]]:
+    """
+    Resolve embedding provider/model from UI selection.
+    Keeps backward compatibility while supporting frontend aliases:
+    minilm, bge, mpnet, openai, cohere, fastembed.
+    """
+    selected = (embedding_model or "").strip().lower()
+
+    if not selected:
+        return provider, resolved_model
+
+    if selected in {"openai", "text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"}:
+        model = "text-embedding-3-small" if selected == "openai" else selected
+        return "openai", model
+
+    if selected == "cohere":
+        return "cohere", "embed-english-v3.0"
+
+    if selected == "minilm":
+        return "sentence_transformer", "all-MiniLM-L6-v2"
+
+    if selected == "bge":
+        return "sentence_transformer", "BAAI/bge-base-en-v1.5"
+
+    if selected == "mpnet":
+        return "sentence_transformer", "all-mpnet-base-v2"
+
+    if selected == "fastembed":
+        # Fallback to a fast local sentence-transformer model.
+        return "sentence_transformer", "all-MiniLM-L6-v2"
+
+    # If a raw provider/model name is supplied, keep existing behavior.
+    return provider, embedding_model
+
+def normalize_embedding_dimension(
+    embedding: List[float],
+    target_dim: int = TARGET_EMBEDDING_DIM
+) -> List[float]:
+    """
+    Ensure embedding length matches pgvector column dimension.
+    Truncate longer vectors or zero-pad shorter ones.
+    """
+    if len(embedding) == target_dim:
+        return embedding
+    if len(embedding) > target_dim:
+        return embedding[:target_dim]
+    return embedding + [0.0] * (target_dim - len(embedding))
+
 def get_embedding(
     text: str, 
     provider: str = "groq",
-    model: str = None,
+    model: Optional[str] = None,
     **kwargs
 ) -> List[float]:
     """
@@ -245,28 +336,48 @@ def get_embedding(
         Embedding vector
     """
     try:
+        provider, resolved_model = resolve_provider_and_model(provider, model)
+        embedding_model = kwargs.pop("embedding_model", None)
+        provider, resolved_model = resolve_embedding_target(provider, resolved_model, embedding_model)
+
         # Phase 5: Use embedding factory for all providers
         if provider in ['sentence_transformer', 'cohere', 'huggingface', 'instructor', 'voyage']:
-            embedder = EmbeddingFactory.create(provider, model=model, **kwargs)
-            return embedder.embed(text)
+            try:
+                embedder = EmbeddingFactory.create(provider, model=resolved_model, **kwargs)
+                return normalize_embedding_dimension(embedder.embed(text))
+            except Exception as embed_err:
+                err_msg = str(embed_err).lower()
+                # Corporate SSL interception / cert mismatch can block HF model downloads.
+                # Fall back to OpenAI embeddings when available instead of hard-failing indexing.
+                ssl_blocked = any(token in err_msg for token in [
+                    "ssl", "certificate", "hostname", "maxretryerror", "httpsconnectionpool"
+                ])
+                if provider == "sentence_transformer" and ssl_blocked and openai_client:
+                    fallback_embedder = EmbeddingFactory.create('openai', model='text-embedding-3-small')
+                    return normalize_embedding_dimension(fallback_embedder.embed(text))
+                raise
         
         # Backward compatibility with Phase 1-4
         elif provider == "openai":
             if not openai_client:
                 raise HTTPException(status_code=400, detail="OpenAI API key not configured")
             
-            embedder = EmbeddingFactory.create('openai', model=model or 'text-embedding-3-small')
-            return embedder.embed(text)
+            # GPT model IDs are chat models, not embedding models.
+            selected_model = (
+                resolved_model if resolved_model and resolved_model.startswith("text-embedding-") else None
+            ) or 'text-embedding-3-small'
+            embedder = EmbeddingFactory.create('openai', model=selected_model)
+            return normalize_embedding_dimension(embedder.embed(text))
         
         elif provider == "groq":
             # Use simple text-based embedding for Groq
-            return simple_text_embedding(text)
+            return normalize_embedding_dimension(simple_text_embedding(text))
         
         else:
             # Try to use factory for unknown providers
             try:
-                embedder = EmbeddingFactory.create(provider, model=model, **kwargs)
-                return embedder.embed(text)
+                embedder = EmbeddingFactory.create(provider, model=resolved_model, **kwargs)
+                return normalize_embedding_dimension(embedder.embed(text))
             except:
                 raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
     
@@ -302,7 +413,11 @@ async def index_document(request: IndexDocumentRequest):
     Index a document with specified provider
     """
     try:
-        print(f"Indexing document {request.document_id} using {request.provider}")
+        embedding_provider, llm_model = resolve_provider_and_model(request.provider, request.model)
+        print(
+            f"Indexing document {request.document_id} using "
+            f"provider={embedding_provider}, model={llm_model or 'default'}"
+        )
         
         # Extract text
         text = extract_text_from_pdf(request.file_path)
@@ -323,8 +438,16 @@ async def index_document(request: IndexDocumentRequest):
         # Store chunks with embeddings
         chunk_data = []
         for chunk_obj in chunk_objects:
-            print(f"Processing chunk {chunk_obj.index + 1}/{len(chunk_objects)} with {request.provider}")
-            embedding = get_embedding(chunk_obj.content, request.provider)
+            print(
+                f"Processing chunk {chunk_obj.index + 1}/{len(chunk_objects)} "
+                f"with {embedding_provider}"
+            )
+            embedding = get_embedding(
+                chunk_obj.content,
+                provider=embedding_provider,
+                model=llm_model,
+                embedding_model=request.embedding_model
+            )
 
             chunk_data.append((
                 request.document_id,
@@ -332,7 +455,7 @@ async def index_document(request: IndexDocumentRequest):
                 chunk_obj.content,
                 embedding,
                 chunk_obj.index,
-                chunk_obj.metadata  # Store metadata
+                Json(chunk_obj.metadata)  # Store metadata as JSONB
             ))
         
         # Batch insert
@@ -351,7 +474,8 @@ async def index_document(request: IndexDocumentRequest):
             "status": "success",
             "chunks_created": len(chunk_objects),
             "total_words": len(text.split()),
-            "provider": request.provider
+            "provider": embedding_provider,
+            "model": llm_model
         }
     
     except Exception as e:
@@ -364,10 +488,18 @@ async def rag_answer(request: RAGAnswerRequest):
     Answer questions using specified provider
     """
     try:
-        print(f"Answering question using {request.provider}: {request.question}")
+        llm_provider, llm_model = resolve_provider_and_model(request.provider, request.model)
+        print(
+            f"Answering question using provider={llm_provider}, "
+            f"model={llm_model or 'default'}: {request.question}"
+        )
         
         # Get question embedding
-        question_embedding = get_embedding(request.question, request.provider)
+        question_embedding = get_embedding(
+            request.question,
+            provider=llm_provider,
+            model=llm_model
+        )
         
         # Connect to database
         conn = get_db_connection()
@@ -429,41 +561,24 @@ Student's Question: {request.question}
 
 Please provide a clear, helpful answer based on the context above. Cite your sources."""
         
-        # Call LLM based on provider
-        print(f"Calling {request.provider} to generate answer...")
-        
-        if request.provider == "openai":
-            if not openai_client:
-                raise HTTPException(status_code=400, detail="OpenAI API key not configured")
-            
-            response = openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.7,
-                max_tokens=500
-            )
-            answer = response.choices[0].message.content
-        
-        elif request.provider == "groq":
-            if not groq_client:
-                raise HTTPException(status_code=400, detail="Groq API key not configured")
-            
-            response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.7,
-                max_tokens=500
-            )
-            answer = response.choices[0].message.content
-        
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown provider: {request.provider}")
+        # Call LLM based on provider/model
+        print(f"Calling provider={llm_provider}, model={llm_model or 'default'}...")
+        llm = LLMFactory.create(
+            provider=llm_provider,
+            model=llm_model,
+            openai_client=openai_client,
+            groq_client=groq_client,
+            anthropic_api_key=ANTHROPIC_API_KEY,
+            google_api_key=GOOGLE_API_KEY,
+            cohere_api_key=COHERE_API_KEY,
+            together_api_key=TOGETHER_API_KEY
+        )
+        answer = llm.generate(
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            temperature=0.7,
+            max_tokens=500
+        )
         
         # Prepare sources
         sources = [
@@ -483,7 +598,8 @@ Please provide a clear, helpful answer based on the context above. Cite your sou
             "answer": answer,
             "sources": sources,
             "chunks_used": len(relevant_chunks),
-            "provider": request.provider
+            "provider": llm_provider,
+            "model": llm.get_model()
         }
     
     except Exception as e:
@@ -617,7 +733,12 @@ async def ingest_youtube_video(request: IngestYouTubeRequest):
             print(f"   Processing chunk {chunk_obj.index + 1}/{len(chunk_objects)}")
             
             # Get embedding
-            embedding = get_embedding(chunk_obj.content, request.provider)
+            embedding = get_embedding(
+                chunk_obj.content,
+                provider=request.provider,
+                model=request.model,
+                embedding_model=request.embedding_model
+            )
             
             chunk_data.append((
                 None,  # document_id (NULL for videos)
@@ -625,7 +746,7 @@ async def ingest_youtube_video(request: IngestYouTubeRequest):
                 chunk_obj.content,
                 embedding,
                 chunk_obj.index,
-                chunk_obj.metadata  # Include time metadata
+                Json(chunk_obj.metadata)  # Include time metadata as JSONB
             ))
         
         # Batch insert chunks
@@ -738,7 +859,12 @@ async def index_document_enhanced(request: IndexDocumentRequest):
         
         chunk_data = []
         for chunk_obj in chunk_objects:
-            embedding = get_embedding(chunk_obj.content, request.provider)
+            embedding = get_embedding(
+                chunk_obj.content,
+                provider=request.provider,
+                model=request.model,
+                embedding_model=request.embedding_model
+            )
             
             chunk_data.append((
                 request.document_id,
@@ -746,7 +872,7 @@ async def index_document_enhanced(request: IndexDocumentRequest):
                 chunk_obj.content,
                 embedding,
                 chunk_obj.index,
-                chunk_obj.metadata
+                Json(chunk_obj.metadata)
             ))
         
         # Batch insert
@@ -927,6 +1053,7 @@ async def generate_quiz(request: GenerateQuizRequest):
     Phase 3 feature
     """
     try:
+        quiz_provider, quiz_model = resolve_provider_and_model(request.provider, request.model)
         print(f"\n{'='*60}")
         print(f"PHASE 3: Quiz Generation")
         print(f"Question count: {request.question_count}")
@@ -987,21 +1114,21 @@ async def generate_quiz(request: GenerateQuizRequest):
                     combined_content,
                     count,
                     request.difficulty,
-                    request.provider
+                    quiz_model or quiz_provider
                 )
             elif qtype == "true_false":
                 questions = quiz_generator.generate_true_false(
                     combined_content,
                     count,
                     request.difficulty,
-                    request.provider
+                    quiz_model or quiz_provider
                 )
             elif qtype == "short_answer":
                 questions = quiz_generator.generate_short_answer(
                     combined_content,
                     count,
                     request.difficulty,
-                    request.provider
+                    quiz_model or quiz_provider
                 )
             else:
                 continue
@@ -1021,7 +1148,8 @@ async def generate_quiz(request: GenerateQuizRequest):
                 "total_questions": len(all_questions),
                 "questions": all_questions
             },
-            "provider": request.provider
+            "provider": quiz_provider,
+            "model": quiz_model
         }
         
     except Exception as e:
@@ -1048,7 +1176,8 @@ async def create_assessment(request: CreateAssessmentRequest):
             question_count=request.question_count,
             difficulty=request.difficulty,
             question_types=request.question_types,
-            provider=request.provider
+            provider=request.provider,
+            model=request.model
         )
         
         quiz_response = await generate_quiz(quiz_request)
@@ -1134,6 +1263,7 @@ async def grade_answer(request: GradeAnswerRequest):
     Phase 3 feature
     """
     try:
+        grade_provider, grade_model = resolve_provider_and_model(request.provider, request.model)
         print(f"\nGrading answer for question {request.question_id}")
         
         # Get question from database
@@ -1157,7 +1287,7 @@ async def grade_answer(request: GradeAnswerRequest):
             question['correct_answer'],
             request.student_answer,
             question['question_type'],
-            request.provider
+            grade_model or grade_provider
         )
         
         print(f"✅ Graded: {grading['score']}/100")
@@ -1989,4 +2119,4 @@ async def compare_llms(
 if __name__ == "__main__":
     import uvicorn
     import json
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=AI_SERVICE_HOST, port=AI_SERVICE_PORT)

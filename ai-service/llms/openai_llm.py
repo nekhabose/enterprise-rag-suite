@@ -27,6 +27,30 @@ class OpenAILLM(BaseLLM):
         super().__init__(model=model, **kwargs)
         self.client = client
         self.model = model
+
+    def _should_use_responses_api(self) -> bool:
+        return self.model.startswith("gpt-5")
+
+    def _resolve_model_for_call(self) -> str:
+        if self._should_use_responses_api() and not hasattr(self.client, "responses"):
+            print(
+                "⚠️ OpenAI SDK without responses API detected; "
+                "falling back from GPT-5 to gpt-4.1-mini"
+            )
+            return "gpt-4.1-mini"
+        return self.model
+
+    def _extract_response_text(self, response) -> str:
+        output_text = getattr(response, "output_text", None)
+        if output_text:
+            return output_text
+
+        for item in getattr(response, "output", []) or []:
+            for content_item in getattr(item, "content", []) or []:
+                text = getattr(content_item, "text", None)
+                if text:
+                    return text
+        raise Exception("No text content returned by OpenAI response")
     
     def generate(
         self,
@@ -39,20 +63,36 @@ class OpenAILLM(BaseLLM):
         """Generate text completion"""
         try:
             messages = []
-            
+
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
-            
+
             messages.append({"role": "user", "content": prompt})
-            
+
+            model_for_call = self._resolve_model_for_call()
+            use_responses_api = model_for_call.startswith("gpt-5")
+
+            if use_responses_api:
+                if not hasattr(self.client, "responses"):
+                    raise Exception("OpenAI responses API not available")
+
+                response = self.client.responses.create(
+                    model=model_for_call,
+                    input=messages,
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                    **kwargs
+                )
+                return self._extract_response_text(response)
+
             response = self.client.chat.completions.create(
-                model=self.model,
+                model=model_for_call,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 **kwargs
             )
-            
+
             return response.choices[0].message.content
             
         except Exception as e:
@@ -68,15 +108,30 @@ class OpenAILLM(BaseLLM):
         """Generate chat completion"""
         try:
             self.validate_messages(messages)
-            
+
+            model_for_call = self._resolve_model_for_call()
+            use_responses_api = model_for_call.startswith("gpt-5")
+
+            if use_responses_api:
+                if not hasattr(self.client, "responses"):
+                    raise Exception("OpenAI responses API not available")
+                response = self.client.responses.create(
+                    model=model_for_call,
+                    input=messages,
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                    **kwargs
+                )
+                return self._extract_response_text(response)
+
             response = self.client.chat.completions.create(
-                model=self.model,
+                model=model_for_call,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 **kwargs
             )
-            
+
             return response.choices[0].message.content
             
         except Exception as e:

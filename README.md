@@ -143,24 +143,23 @@ cp .env.example .env
 cd ai-service
 source venv/bin/activate
 python main.py
-# Running on http://localhost:8000
+# Running on http://localhost:${AI_SERVICE_PORT:-8000}
 ```
 
 **Terminal 2 - Node.js Backend:**
 ```bash
 cd backend
 npm run dev
-# Running on http://localhost:3000
+# Running on http://localhost:${PORT:-3000}
 ```
 
 **Terminal 3 - React Frontend:**
 ```bash
 cd frontend
 npm start
-# Running on http://localhost:3001
+# Running on http://localhost:${PORT:-3001}
 ```
-
-Visit **http://localhost:3001** in your browser!
+Visit your configured frontend URL (default **http://localhost:3001**) in your browser.
 
 ## 📚 Usage Guide
 
@@ -272,26 +271,70 @@ edu-platform/
 ## 🔧 Configuration
 
 ### Environment Variables
-
-**AI Service (.env)**
-```env
-DATABASE_URL=postgresql://localhost:5432/edu_platform
-OPENAI_API_KEY=sk-...        # Optional
-GROQ_API_KEY=gsk_...          # Free option
+Create env files first:
+```bash
+cp ai-service/.env.example ai-service/.env
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
 ```
 
-**Backend (.env)**
+Where to add API keys:
+- Add LLM keys in `ai-service/.env`
+- Add backend secrets/DB in `backend/.env`
+- Add frontend API URL and frontend dev port in `frontend/.env`
+
+Templates:
+
+**`ai-service/.env`**
 ```env
+AI_SERVICE_HOST=0.0.0.0
+AI_SERVICE_PORT=8000
+
+FRONTEND_PORT=3001
+FRONTEND_URL=http://localhost:3001
+# CORS_ORIGINS=http://localhost:3001,http://127.0.0.1:3001
+
 DATABASE_URL=postgresql://localhost:5432/edu_platform
-JWT_SECRET=your-secret-key
-AI_SERVICE_URL=http://localhost:8000
+
+OPENAI_API_KEY=sk-...
+GROQ_API_KEY=gsk_...
+COHERE_API_KEY=...
+ANTHROPIC_API_KEY=...
+GOOGLE_API_KEY=...
+TOGETHER_API_KEY=...
+```
+
+**`backend/.env`**
+```env
 PORT=3000
+DATABASE_URL=postgresql://localhost:5432/edu_platform
+JWT_SECRET=replace-with-a-strong-secret
+
+# Use either AI_SERVICE_URL or AI_SERVICE_HOST + AI_SERVICE_PORT
+AI_SERVICE_URL=http://localhost:8000
+# AI_SERVICE_HOST=localhost
+# AI_SERVICE_PORT=8000
 ```
 
-**Frontend (.env)**
+**`frontend/.env`**
 ```env
+PORT=3001
 REACT_APP_API_URL=http://localhost:3000
+# Optional fallback used when REACT_APP_API_URL is not set
+REACT_APP_BACKEND_PORT=3000
 ```
+
+Port configuration:
+- Frontend dev server port: `frontend/.env` -> `PORT`
+- Backend API port: `backend/.env` -> `PORT`
+- AI service port: `ai-service/.env` -> `AI_SERVICE_PORT` (or `PORT`)
+
+If you change ports:
+1. Set `backend/.env` `PORT=<backend_port>`
+2. Set `ai-service/.env` `AI_SERVICE_PORT=<ai_port>`
+3. Set `frontend/.env` `PORT=<frontend_port>`
+4. Point frontend to backend with `REACT_APP_API_URL=http://localhost:<backend_port>`
+5. Point backend to AI with `AI_SERVICE_URL=http://localhost:<ai_port>` (or host+port vars)
 
 ## 🧪 Testing
 
