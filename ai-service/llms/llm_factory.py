@@ -63,14 +63,14 @@ class LLMFactory:
             model = model or provider
             provider = "openai"
         elif provider == "openai" and model is None:
-            model = "gpt-4.1-mini"
+            model = "gpt-4o-mini"
         
         # LLM mapping with default models
         llms = {
             # OpenAI
             "openai": lambda **kw: OpenAILLM(
                 client=openai_client,
-                model=model or "gpt-4.1-mini",
+                model=model or "gpt-4o-mini",
                 **kw
             ),
             "gpt-3.5": lambda **kw: OpenAILLM(
@@ -86,6 +86,16 @@ class LLMFactory:
             "gpt-4-turbo": lambda **kw: OpenAILLM(
                 client=openai_client,
                 model="gpt-4-turbo-preview",
+                **kw
+            ),
+            "gpt-4o": lambda **kw: OpenAILLM(
+                client=openai_client,
+                model="gpt-4o",
+                **kw
+            ),
+            "gpt-4o-mini": lambda **kw: OpenAILLM(
+                client=openai_client,
+                model="gpt-4o-mini",
                 **kw
             ),
             
@@ -109,12 +119,12 @@ class LLMFactory:
             # Anthropic
             "anthropic": lambda **kw: AnthropicLLM(
                 api_key=anthropic_api_key,
-                model=model or "claude-3-sonnet-20240229",
+                model=model or "claude-3-5-sonnet-latest",
                 **kw
             ),
             "claude": lambda **kw: AnthropicLLM(
                 api_key=anthropic_api_key,
-                model=model or "claude-3-sonnet-20240229",
+                model=model or "claude-3-5-sonnet-latest",
                 **kw
             ),
             "claude-opus": lambda **kw: AnthropicLLM(
@@ -124,12 +134,22 @@ class LLMFactory:
             ),
             "claude-sonnet": lambda **kw: AnthropicLLM(
                 api_key=anthropic_api_key,
-                model="claude-3-sonnet-20240229",
+                model="claude-3-5-sonnet-latest",
                 **kw
             ),
             "claude-haiku": lambda **kw: AnthropicLLM(
                 api_key=anthropic_api_key,
                 model="claude-3-haiku-20240307",
+                **kw
+            ),
+            "claude-3.5": lambda **kw: AnthropicLLM(
+                api_key=anthropic_api_key,
+                model="claude-3-5-sonnet-latest",
+                **kw
+            ),
+            "claude-3.5-sonnet": lambda **kw: AnthropicLLM(
+                api_key=anthropic_api_key,
+                model="claude-3-5-sonnet-latest",
                 **kw
             ),
             
@@ -222,7 +242,9 @@ class LLMFactory:
         """
         return {
             # OpenAI
-            "openai": "OpenAI GPT-4.1-mini (default)",
+            "openai": "OpenAI GPT-4o-mini (default)",
+            "gpt-4o": "OpenAI GPT-4o",
+            "gpt-4o-mini": "OpenAI GPT-4o-mini",
             "gpt-4.1": "OpenAI GPT-4.1",
             "gpt-4.1-mini": "OpenAI GPT-4.1-mini",
             "gpt-4.1-nano": "OpenAI GPT-4.1-nano",
@@ -239,10 +261,12 @@ class LLMFactory:
             "mixtral": "Groq Mixtral 8x7B",
             
             # Anthropic
-            "anthropic": "Anthropic Claude 3 Sonnet (default)",
-            "claude": "Anthropic Claude 3 Sonnet",
+            "anthropic": "Anthropic Claude 3.5 Sonnet (default)",
+            "claude": "Anthropic Claude 3.5 Sonnet",
+            "claude-3.5": "Anthropic Claude 3.5 Sonnet",
+            "claude-3.5-sonnet": "Anthropic Claude 3.5 Sonnet",
             "claude-opus": "Anthropic Claude 3 Opus (most capable)",
-            "claude-sonnet": "Anthropic Claude 3 Sonnet (balanced)",
+            "claude-sonnet": "Anthropic Claude 3.5 Sonnet (balanced)",
             "claude-haiku": "Anthropic Claude 3 Haiku (fastest)",
             
             # Google

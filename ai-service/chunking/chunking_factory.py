@@ -13,6 +13,7 @@ class ChunkingFactory:
     
     _chunkers: Dict[str, Type[BaseChunker]] = {
         'fixed_size': FixedSizeChunker,
+        'overlap': FixedSizeChunker,
         'page_based': PageBasedChunker,
         'paragraph': ParagraphChunker,
         'semantic': SemanticChunker,
@@ -58,7 +59,10 @@ class ChunkingFactory:
         for name, chunker_class in cls._chunkers.items():
             # Create instance with defaults to get description
             instance = chunker_class()
-            strategies[name] = instance.get_description()
+            if name == "overlap":
+                strategies[name] = "Overlap chunking: fixed-size chunks with explicit overlap"
+            else:
+                strategies[name] = instance.get_description()
         
         return strategies
     

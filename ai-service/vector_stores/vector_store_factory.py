@@ -45,6 +45,7 @@ class VectorStoreFactory:
         from .chroma_store import ChromaDBVectorStore
         from .qdrant_store import QdrantVectorStore
         from .postgres_store import PostgresVectorStore
+        from .pinecone_store import PineconeVectorStore
         
         # Store mapping
         stores = {
@@ -65,6 +66,7 @@ class VectorStoreFactory:
             # PostgreSQL (existing)
             "postgres": lambda **kw: PostgresVectorStore(connection_string=db_connection_string, **kw),
             "pgvector": lambda **kw: PostgresVectorStore(connection_string=db_connection_string, **kw),
+            "pinecone": lambda **kw: PineconeVectorStore(dimension=dimension, **kw),
         }
         
         if strategy not in stores:
@@ -114,6 +116,7 @@ class VectorStoreFactory:
             # PostgreSQL
             "postgres": "PostgreSQL + pgvector - Existing database",
             "pgvector": "PostgreSQL + pgvector - Existing database",
+            "pinecone": "Pinecone - Managed serverless vector database",
         }
     
     @classmethod
@@ -130,6 +133,7 @@ class VectorStoreFactory:
             "scale": "qdrant",
             "ease_of_use": "chromadb",
             "existing_db": "postgres",
+            "managed_saas": "pinecone",
             "production": "qdrant",
             "development": "chromadb",
             "local": "faiss",

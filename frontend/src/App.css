@@ -61,6 +61,10 @@ select {
   font-family: inherit;
 }
 
+textarea {
+  font-family: inherit;
+}
+
 .auth-shell {
   min-height: 100vh;
   display: grid;
@@ -507,6 +511,11 @@ select {
   color: var(--text-secondary);
 }
 
+.dropzone small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .connector-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -526,6 +535,66 @@ select {
   border-color: #7ec2cd;
   color: var(--brand-700);
   background: #edf9fb;
+}
+
+.youtube-thumb {
+  width: 100%;
+  max-height: 180px;
+  object-fit: cover;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+}
+
+.connector-status-list {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: #f9fcfd;
+}
+
+.connector-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: 13px;
+}
+
+.connector-form {
+  padding-top: var(--space-2);
+  border-top: 1px solid #ecf3f7;
+}
+
+.example-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.example-chip {
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid #bcd6de;
+  background: #f4fafc;
+  color: var(--brand-700);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.example-chip:hover {
+  background: #eaf7fa;
+}
+
+.connector-metadata {
+  height: auto;
+  min-height: 92px;
+  padding: 10px 12px;
+  resize: vertical;
+  line-height: 18px;
 }
 
 .progress-row {
@@ -581,6 +650,12 @@ select {
   overflow: auto;
   display: grid;
   gap: var(--space-3);
+}
+
+.conversation-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
 }
 
 .msg {

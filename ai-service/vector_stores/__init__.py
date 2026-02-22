@@ -10,6 +10,7 @@ from .faiss_store import FAISSVectorStore
 from .chroma_store import ChromaDBVectorStore
 from .qdrant_store import QdrantVectorStore
 from .postgres_store import PostgresVectorStore
+from .pinecone_store import PineconeVectorStore
 
 __all__ = [
     'BaseVectorStore',
@@ -19,4 +20,5 @@ __all__ = [
     'ChromaDBVectorStore',
     'QdrantVectorStore',
     'PostgresVectorStore',
+    'PineconeVectorStore',
 ]

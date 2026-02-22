@@ -23,6 +23,16 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 const app = express();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
+const ensureBackendTables = async () => {
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+    `);
+};
+
 // Multer configuration for file uploads
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -42,6 +52,8 @@ app.use(express.json());
 // Custom Request type with userId
 interface AuthRequest extends Request {
     userId?: number;
+    tenantId?: number;
+    userRole?: string;
 }
 
 interface VideoIngestResponse {
@@ -64,6 +76,94 @@ interface SubmitAssessmentResponse {
     percentage: number;
 }
 
+const ROLE_PERMISSIONS: Record<string, string[]> = {
+    admin: ['*'],
+    teacher: [
+        'documents:read', 'documents:write', 'documents:delete',
+        'videos:read', 'videos:write', 'videos:delete',
+        'assessments:read', 'assessments:write', 'assessments:delete',
+        'chat:use', 'tenant:read'
+    ],
+    member: [
+        'documents:read', 'documents:write',
+        'videos:read', 'videos:write',
+        'assessments:read', 'assessments:write',
+        'chat:use'
+    ],
+    student: ['documents:read', 'videos:read', 'assessments:read', 'chat:use']
+};
+
+const hasPermission = (role: string | undefined, permission: string): boolean => {
+    const normalizedRole = (role || 'student').toLowerCase();
+    const permissions = ROLE_PERMISSIONS[normalizedRole] || ROLE_PERMISSIONS.student;
+    return permissions.includes('*') || permissions.includes(permission);
+};
+
+const requirePermission = (permission: string) => {
+    return (req: AuthRequest, res: Response, next: NextFunction) => {
+        if (!hasPermission(req.userRole, permission)) {
+            return res.status(403).json({ error: `Missing permission: ${permission}` });
+        }
+        next();
+    };
+};
+
+const isTenantScoped = (reqTenantId: number | undefined, targetTenantId: number): boolean => {
+    if (!reqTenantId) return false;
+    return reqTenantId === targetTenantId;
+};
+
+const isPlatformAdmin = (role: string | undefined): boolean =>
+    (role || '').toLowerCase() === 'admin';
+
+const requireTenantAccess = (
+    req: AuthRequest,
+    res: Response,
+    targetTenantId: number
+): boolean => {
+    if (!Number.isFinite(targetTenantId) || targetTenantId <= 0) {
+        res.status(400).json({ error: 'Invalid tenant id' });
+        return false;
+    }
+    if (isPlatformAdmin(req.userRole)) {
+        return true;
+    }
+    if (!isTenantScoped(req.tenantId, targetTenantId)) {
+        res.status(403).json({ error: 'Forbidden: cross-tenant access denied' });
+        return false;
+    }
+    return true;
+};
+
+const logAudit = async (
+    userId: number | undefined,
+    tenantId: number | undefined,
+    action: string,
+    resourceType: string,
+    resourceId?: number | string,
+    details: Record<string, unknown> = {}
+) => {
+    if (!userId || !tenantId) return;
+    try {
+        await pool.query(
+            `INSERT INTO audit_logs (tenant_id, user_id, action, resource_type, resource_id, details, ip_address, user_agent)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+                tenantId,
+                userId,
+                action,
+                resourceType,
+                typeof resourceId === 'number' ? resourceId : null,
+                JSON.stringify(details),
+                null,
+                null
+            ]
+        );
+    } catch (error) {
+        console.error('Audit log error:', error);
+    }
+};
+
 // Auth Middleware
 const authMiddleware = async (req: AuthRequest, res: Response, next: NextFunction) => {
     const authHeader = req.headers.authorization;
@@ -79,8 +179,33 @@ const authMiddleware = async (req: AuthRequest, res: Response, next: NextFunctio
     }
     
     try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: number };
+        const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: number; tenantId?: number; role?: string };
         req.userId = decoded.userId;
+
+        const userResult = await pool.query(
+            'SELECT tenant_id, role FROM users WHERE id = $1',
+            [decoded.userId]
+        );
+
+        if (userResult.rows.length === 0) {
+            return res.status(401).json({ error: 'User not found' });
+        }
+
+        const tenantId = userResult.rows[0].tenant_id as number | null;
+        if (!tenantId) {
+            return res.status(403).json({ error: 'User is not assigned to a tenant' });
+        }
+
+        const tenantResult = await pool.query(
+            'SELECT is_active FROM tenants WHERE id = $1',
+            [tenantId]
+        );
+        if (tenantResult.rows.length === 0 || tenantResult.rows[0].is_active === false) {
+            return res.status(403).json({ error: 'Tenant inactive' });
+        }
+
+        req.tenantId = tenantId;
+        req.userRole = userResult.rows[0].role || decoded.role || 'student';
         next();
     } catch (error) {
         res.status(401).json({ error: 'Invalid or expired token' });
@@ -109,22 +234,39 @@ app.post('/auth/signup', async (req: Request, res: Response) => {
         // Hash password
         const passwordHash = await bcrypt.hash(password, 10);
         
+        // Ensure a default tenant exists for first-time setup
+        let tenantResult = await pool.query('SELECT id FROM tenants ORDER BY id ASC LIMIT 1');
+        if (tenantResult.rows.length === 0) {
+            tenantResult = await pool.query(
+                `INSERT INTO tenants (name, domain, plan, max_users, max_storage_gb)
+                 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+                ['Default Tenant', 'default.local', 'free', 50, 10]
+            );
+        }
+        const tenantId = tenantResult.rows[0].id;
+
         // Insert user
         const result = await pool.query(
-            'INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email',
-            [email, passwordHash]
+            'INSERT INTO users (email, password_hash, tenant_id, role) VALUES ($1, $2, $3, $4) RETURNING id, email, tenant_id, role',
+            [email, passwordHash, tenantId, 'member']
         );
         
         const user = result.rows[0];
         
         // Generate JWT token
-        const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
+        const token = jwt.sign(
+            { userId: user.id, tenantId: user.tenant_id, role: user.role },
+            process.env.JWT_SECRET!,
+            { expiresIn: '7d' }
+        );
         
         res.json({ 
             token,
             user: {
                 id: user.id,
-                email: user.email
+                email: user.email,
+                tenant_id: user.tenant_id,
+                role: user.role
             }
         });
     } catch (error: any) {
@@ -147,7 +289,7 @@ app.post('/auth/login', async (req: Request, res: Response) => {
     
     try {
         const result = await pool.query(
-            'SELECT id, email, password_hash FROM users WHERE email = $1',
+            'SELECT id, email, password_hash, tenant_id, role FROM users WHERE email = $1',
             [email]
         );
         
@@ -165,13 +307,19 @@ app.post('/auth/login', async (req: Request, res: Response) => {
         }
         
         // Generate JWT token
-        const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
+        const token = jwt.sign(
+            { userId: user.id, tenantId: user.tenant_id, role: user.role },
+            process.env.JWT_SECRET!,
+            { expiresIn: '7d' }
+        );
         
         res.json({ 
             token,
             user: {
                 id: user.id,
-                email: user.email
+                email: user.email,
+                tenant_id: user.tenant_id,
+                role: user.role
             }
         });
     } catch (error) {
@@ -183,7 +331,7 @@ app.post('/auth/login', async (req: Request, res: Response) => {
 // ============ DOCUMENT ENDPOINTS ============
 
 // Upload document
-app.post('/documents/upload', authMiddleware, upload.single('file'), async (req: AuthRequest, res: Response) => {
+app.post('/documents/upload', authMiddleware, requirePermission('documents:write'), upload.single('file'), async (req: AuthRequest, res: Response) => {
     if (!req.file) {
         return res.status(400).json({ error: 'No file uploaded' });
     }
@@ -225,6 +373,11 @@ const aiResponse = await axios.post(
             );
             
             console.log(`AI indexing successful:`, aiResponse.data);
+            await logAudit(req.userId, req.tenantId, 'document.upload', 'document', documentId, {
+                filename: originalname,
+                provider,
+                model
+            });
             
             res.json({ 
                 success: true, 
@@ -250,13 +403,18 @@ const aiResponse = await axios.post(
 });
 
 // Get user's documents
-app.get('/documents', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/documents', authMiddleware, requirePermission('documents:read'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
+    const tenantId = req.tenantId!;
     
     try {
         const result = await pool.query(
-            'SELECT id, filename, subject, year, uploaded_at FROM documents WHERE user_id = $1 ORDER BY uploaded_at DESC',
-            [userId]
+            `SELECT d.id, d.filename, d.subject, d.year, d.uploaded_at
+             FROM documents d
+             JOIN users u ON d.user_id = u.id
+             WHERE d.user_id = $1 AND u.tenant_id = $2
+             ORDER BY d.uploaded_at DESC`,
+            [userId, tenantId]
         );
         
         res.json(result.rows);
@@ -266,21 +424,95 @@ app.get('/documents', authMiddleware, async (req: AuthRequest, res: Response) =>
     }
 });
 
-// Delete document
-app.delete('/documents/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+// Preview document
+app.get('/documents/:id/preview', authMiddleware, requirePermission('documents:read'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
+    const tenantId = req.tenantId!;
+    const documentId = parseInt(req.params.id as string);
+
+    try {
+        const result = await pool.query(
+            `SELECT d.id, d.filename, d.file_path
+             FROM documents d
+             JOIN users u ON d.user_id = u.id
+             WHERE d.id = $1 AND d.user_id = $2 AND u.tenant_id = $3`,
+            [documentId, userId, tenantId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Document not found' });
+        }
+
+        const doc = result.rows[0];
+        const filePath = doc.file_path as string;
+        if (!filePath || !path.isAbsolute(filePath) || !fs.existsSync(filePath)) {
+            return res.status(400).json({ error: 'Preview unavailable for this document source' });
+        }
+
+        await logAudit(req.userId, req.tenantId, 'document.preview', 'document', documentId);
+        res.setHeader('Content-Type', 'application/pdf');
+        return res.sendFile(filePath);
+    } catch (error) {
+        console.error('Preview document error:', error);
+        res.status(500).json({ error: 'Failed to preview document' });
+    }
+});
+
+// Download document
+app.get('/documents/:id/download', authMiddleware, requirePermission('documents:read'), async (req: AuthRequest, res: Response) => {
+    const userId = req.userId!;
+    const tenantId = req.tenantId!;
+    const documentId = parseInt(req.params.id as string);
+
+    try {
+        const result = await pool.query(
+            `SELECT d.id, d.filename, d.file_path
+             FROM documents d
+             JOIN users u ON d.user_id = u.id
+             WHERE d.id = $1 AND d.user_id = $2 AND u.tenant_id = $3`,
+            [documentId, userId, tenantId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Document not found' });
+        }
+
+        const doc = result.rows[0];
+        const filePath = doc.file_path as string;
+        if (!filePath || !path.isAbsolute(filePath) || !fs.existsSync(filePath)) {
+            return res.status(400).json({ error: 'Download unavailable for this document source' });
+        }
+
+        await logAudit(req.userId, req.tenantId, 'document.download', 'document', documentId);
+        return res.download(filePath, doc.filename || `document-${documentId}.pdf`);
+    } catch (error) {
+        console.error('Download document error:', error);
+        res.status(500).json({ error: 'Failed to download document' });
+    }
+});
+
+// Delete document
+app.delete('/documents/:id', authMiddleware, requirePermission('documents:delete'), async (req: AuthRequest, res: Response) => {
+    const userId = req.userId!;
+    const tenantId = req.tenantId!;
     const documentId = parseInt(req.params.id as string);
     
     try {
         const result = await pool.query(
-            'DELETE FROM documents WHERE id = $1 AND user_id = $2 RETURNING id',
-            [documentId, userId]
+            `DELETE FROM documents d
+             USING users u
+             WHERE d.id = $1
+               AND d.user_id = $2
+               AND u.id = d.user_id
+               AND u.tenant_id = $3
+             RETURNING d.id`,
+            [documentId, userId, tenantId]
         );
         
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Document not found' });
         }
-        
+        await logAudit(req.userId, req.tenantId, 'document.delete', 'document', documentId);
         res.json({ success: true });
     } catch (error) {
         console.error('Delete document error:', error);
@@ -291,7 +523,7 @@ app.delete('/documents/:id', authMiddleware, async (req: AuthRequest, res: Respo
 // ============ CONVERSATION ENDPOINTS ============
 
 // Create conversation
-app.post('/conversations', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.post('/conversations', authMiddleware, requirePermission('chat:use'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
     const { title } = req.body;
     
@@ -300,7 +532,9 @@ app.post('/conversations', authMiddleware, async (req: AuthRequest, res: Respons
             'INSERT INTO conversations (user_id, title) VALUES ($1, $2) RETURNING id, title, created_at',
             [userId, title || 'New Conversation']
         );
-        
+        await logAudit(req.userId, req.tenantId, 'conversation.create', 'conversation', result.rows[0].id, {
+            title: title || 'New Conversation'
+        });
         res.json(result.rows[0]);
     } catch (error) {
         console.error('Create conversation error:', error);
@@ -309,13 +543,18 @@ app.post('/conversations', authMiddleware, async (req: AuthRequest, res: Respons
 });
 
 // Get user's conversations
-app.get('/conversations', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/conversations', authMiddleware, requirePermission('chat:use'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
+    const tenantId = req.tenantId!;
     
     try {
         const result = await pool.query(
-            'SELECT id, title, created_at FROM conversations WHERE user_id = $1 ORDER BY created_at DESC',
-            [userId]
+            `SELECT c.id, c.title, c.created_at
+             FROM conversations c
+             JOIN users u ON c.user_id = u.id
+             WHERE c.user_id = $1 AND u.tenant_id = $2
+             ORDER BY c.created_at DESC`,
+            [userId, tenantId]
         );
         
         res.json(result.rows);
@@ -326,15 +565,19 @@ app.get('/conversations', authMiddleware, async (req: AuthRequest, res: Response
 });
 
 // Get messages in a conversation
-app.get('/conversations/:id/messages', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/conversations/:id/messages', authMiddleware, requirePermission('chat:use'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
+    const tenantId = req.tenantId!;
     const conversationId = parseInt(req.params.id as string);
     
     try {
         // Verify conversation belongs to user
         const convResult = await pool.query(
-            'SELECT id FROM conversations WHERE id = $1 AND user_id = $2',
-            [conversationId, userId]
+            `SELECT c.id
+             FROM conversations c
+             JOIN users u ON c.user_id = u.id
+             WHERE c.id = $1 AND c.user_id = $2 AND u.tenant_id = $3`,
+            [conversationId, userId, tenantId]
         );
         
         if (convResult.rows.length === 0) {
@@ -354,12 +597,42 @@ app.get('/conversations/:id/messages', authMiddleware, async (req: AuthRequest, 
     }
 });
 
+// Delete conversation
+app.delete('/conversations/:id', authMiddleware, requirePermission('chat:use'), async (req: AuthRequest, res: Response) => {
+    const userId = req.userId!;
+    const tenantId = req.tenantId!;
+    const conversationId = parseInt(req.params.id as string);
+
+    try {
+        const result = await pool.query(
+            `DELETE FROM conversations c
+             USING users u
+             WHERE c.id = $1
+               AND c.user_id = $2
+               AND u.id = c.user_id
+               AND u.tenant_id = $3
+             RETURNING c.id`,
+            [conversationId, userId, tenantId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Conversation not found' });
+        }
+
+        await logAudit(req.userId, req.tenantId, 'conversation.delete', 'conversation', conversationId);
+        return res.json({ success: true });
+    } catch (error) {
+        console.error('Delete conversation error:', error);
+        return res.status(500).json({ error: 'Failed to delete conversation' });
+    }
+});
+
 // ============ CHAT ENDPOINT ============
 
 // Simple chat endpoint (frontend compatibility)
-app.post('/chat/answer', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.post('/chat/answer', authMiddleware, requirePermission('chat:use'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
-    const { question, document_ids, provider, model } = req.body;
+    const { question, document_ids, provider, model, retrieval_strategy, enable_reranking, top_k } = req.body;
 
     if (!question) {
         return res.status(400).json({ error: 'question required' });
@@ -373,13 +646,32 @@ app.post('/chat/answer', authMiddleware, async (req: AuthRequest, res: Response)
                 question,
                 document_ids: document_ids || null,
                 provider: provider || 'groq',
-                model: model || null
+                model: model || null,
+                retrieval_strategy: retrieval_strategy || 'semantic',
+                enable_reranking: Boolean(enable_reranking),
+                top_k: Number(top_k) || 5
             },
             { timeout: 60000 }
         );
 
-        const { answer, sources } = aiResponse.data as any;
-        res.json({ answer, sources });
+        const {
+            answer,
+            sources,
+            chunks_used,
+            retrieval_strategy: used_retrieval_strategy,
+            reranking_enabled,
+            provider: used_provider,
+            model: used_model
+        } = aiResponse.data as any;
+        res.json({
+            answer,
+            sources,
+            chunks_used,
+            retrieval_strategy: used_retrieval_strategy,
+            reranking_enabled,
+            provider: used_provider,
+            model: used_model
+        });
     } catch (error: any) {
         console.error('Chat answer error:', error.response?.data || error.message);
         res.status(500).json({
@@ -390,9 +682,10 @@ app.post('/chat/answer', authMiddleware, async (req: AuthRequest, res: Response)
 });
 
 // Send message and get AI response
-app.post('/chat/send', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.post('/chat/send', authMiddleware, requirePermission('chat:use'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
-    const { conversation_id, question, document_ids } = req.body;
+    const tenantId = req.tenantId!;
+    const { conversation_id, question, document_ids, retrieval_strategy, enable_reranking, top_k } = req.body;
     
     if (!conversation_id || !question) {
         return res.status(400).json({ error: 'conversation_id and question required' });
@@ -403,8 +696,11 @@ app.post('/chat/send', authMiddleware, async (req: AuthRequest, res: Response) =
         
         // Verify conversation belongs to user
         const convResult = await pool.query(
-            'SELECT id FROM conversations WHERE id = $1 AND user_id = $2',
-            [conversation_id, userId]
+            `SELECT c.id
+             FROM conversations c
+             JOIN users u ON c.user_id = u.id
+             WHERE c.id = $1 AND c.user_id = $2 AND u.tenant_id = $3`,
+            [conversation_id, userId, tenantId]
         );
         
         if (convResult.rows.length === 0) {
@@ -427,12 +723,23 @@ const aiResponse = await axios.post(
         question: question,
         document_ids: document_ids || null,
         provider: provider,
-        model: model
+        model: model,
+        retrieval_strategy: retrieval_strategy || 'semantic',
+        enable_reranking: Boolean(enable_reranking),
+        top_k: Number(top_k) || 5
     },
             { timeout: 60000 } // 1 minute timeout
         );
         
-        const { answer, sources } = aiResponse.data as any;
+        const {
+            answer,
+            sources,
+            chunks_used,
+            retrieval_strategy: used_retrieval_strategy,
+            reranking_enabled,
+            provider: used_provider,
+            model: used_model
+        } = aiResponse.data as any;
         
         console.log(`AI response received, ${sources?.length || 0} sources used`);
         
@@ -441,11 +748,20 @@ const aiResponse = await axios.post(
             'INSERT INTO messages (conversation_id, role, content, sources) VALUES ($1, $2, $3, $4) RETURNING id, role, content, sources, created_at',
             [conversation_id, 'assistant', answer, JSON.stringify(sources)]
         );
+        await logAudit(req.userId, req.tenantId, 'chat.send', 'conversation', conversation_id, {
+            provider,
+            model
+        });
         
         res.json({
             message: messageResult.rows[0],
             answer: answer,
-            sources: sources
+            sources: sources,
+            chunks_used,
+            retrieval_strategy: used_retrieval_strategy,
+            reranking_enabled,
+            provider: used_provider,
+            model: used_model
         });
     } catch (error: any) {
         console.error('Chat error:', error.response?.data || error.message);
@@ -459,7 +775,7 @@ const aiResponse = await axios.post(
 // ============ PHASE 2: YOUTUBE VIDEO ENDPOINTS ============
 
 // Get video info without downloading
-app.post('/videos/info', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.post('/videos/info', authMiddleware, requirePermission('videos:read'), async (req: AuthRequest, res: Response) => {
     const { youtube_url } = req.body;
     
     if (!youtube_url) {
@@ -480,7 +796,7 @@ app.post('/videos/info', authMiddleware, async (req: AuthRequest, res: Response)
 });
 
 // Upload YouTube video
-app.post('/videos/upload', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.post('/videos/upload', authMiddleware, requirePermission('videos:write'), async (req: AuthRequest, res: Response) => {
     const { youtube_url, title, subject, year, provider, model, embedding_model, chunking_strategy } = req.body;
     const userId = req.userId!;
     
@@ -518,6 +834,11 @@ app.post('/videos/upload', authMiddleware, async (req: AuthRequest, res: Respons
             );
             
             console.log(`AI ingestion successful:`, aiResponse.data);
+            await logAudit(req.userId, req.tenantId, 'video.upload', 'video', videoId, {
+                youtube_url,
+                provider,
+                model
+            });
             
             res.json({ 
                 success: true, 
@@ -544,13 +865,18 @@ app.post('/videos/upload', authMiddleware, async (req: AuthRequest, res: Respons
 });
 
 // Get user's videos
-app.get('/videos', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/videos', authMiddleware, requirePermission('videos:read'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
+    const tenantId = req.tenantId!;
     
     try {
         const result = await pool.query(
-            'SELECT id, title, youtube_url, NULL::text AS duration, subject, year, created_at AS uploaded_at FROM videos WHERE user_id = $1 ORDER BY created_at DESC',
-            [userId]
+            `SELECT v.id, v.title, v.youtube_url, NULL::text AS duration, v.subject, v.year, v.created_at AS uploaded_at
+             FROM videos v
+             JOIN users u ON v.user_id = u.id
+             WHERE v.user_id = $1 AND u.tenant_id = $2
+             ORDER BY v.created_at DESC`,
+            [userId, tenantId]
         );
         
         res.json(result.rows);
@@ -561,20 +887,27 @@ app.get('/videos', authMiddleware, async (req: AuthRequest, res: Response) => {
 });
 
 // Delete video
-app.delete('/videos/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.delete('/videos/:id', authMiddleware, requirePermission('videos:delete'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
+    const tenantId = req.tenantId!;
     const videoId = parseInt(req.params.id as string);
     
     try {
         const result = await pool.query(
-            'DELETE FROM videos WHERE id = $1 AND user_id = $2 RETURNING id',
-            [videoId, userId]
+            `DELETE FROM videos v
+             USING users u
+             WHERE v.id = $1
+               AND v.user_id = $2
+               AND u.id = v.user_id
+               AND u.tenant_id = $3
+             RETURNING v.id`,
+            [videoId, userId, tenantId]
         );
         
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Video not found' });
         }
-        
+        await logAudit(req.userId, req.tenantId, 'video.delete', 'video', videoId);
         res.json({ success: true });
     } catch (error) {
         console.error('Delete video error:', error);
@@ -585,21 +918,28 @@ app.delete('/videos/:id', authMiddleware, async (req: AuthRequest, res: Response
 // ============ PHASE 2: METADATA & FILTERING ============
 
 // Update document metadata
-app.put('/documents/:id/metadata', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.put('/documents/:id/metadata', authMiddleware, requirePermission('documents:write'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
+    const tenantId = req.tenantId!;
     const documentId = parseInt(req.params.id as string);
     const { subject, year } = req.body;
     
     try {
         const result = await pool.query(
-            'UPDATE documents SET subject = $1, year = $2 WHERE id = $3 AND user_id = $4 RETURNING id',
-            [subject, year, documentId, userId]
+            `UPDATE documents d
+             SET subject = $1, year = $2
+             FROM users u
+             WHERE d.id = $3 AND d.user_id = $4
+               AND u.id = d.user_id
+               AND u.tenant_id = $5
+             RETURNING d.id`,
+            [subject, year, documentId, userId, tenantId]
         );
         
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Document not found' });
         }
-        
+        await logAudit(req.userId, req.tenantId, 'document.metadata.update', 'document', documentId, { subject, year });
         res.json({ success: true });
     } catch (error) {
         console.error('Update metadata error:', error);
@@ -608,21 +948,28 @@ app.put('/documents/:id/metadata', authMiddleware, async (req: AuthRequest, res:
 });
 
 // Update video metadata
-app.put('/videos/:id/metadata', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.put('/videos/:id/metadata', authMiddleware, requirePermission('videos:write'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
+    const tenantId = req.tenantId!;
     const videoId = parseInt(req.params.id as string);
     const { subject, year } = req.body;
     
     try {
         const result = await pool.query(
-            'UPDATE videos SET subject = $1, year = $2 WHERE id = $3 AND user_id = $4 RETURNING id',
-            [subject, year, videoId, userId]
+            `UPDATE videos v
+             SET subject = $1, year = $2
+             FROM users u
+             WHERE v.id = $3 AND v.user_id = $4
+               AND u.id = v.user_id
+               AND u.tenant_id = $5
+             RETURNING v.id`,
+            [subject, year, videoId, userId, tenantId]
         );
         
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Video not found' });
         }
-        
+        await logAudit(req.userId, req.tenantId, 'video.metadata.update', 'video', videoId, { subject, year });
         res.json({ success: true });
     } catch (error) {
         console.error('Update metadata error:', error);
@@ -631,8 +978,9 @@ app.put('/videos/:id/metadata', authMiddleware, async (req: AuthRequest, res: Re
 });
 
 // Search by metadata
-app.get('/search', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/search', authMiddleware, requirePermission('documents:read'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
+    const tenantId = req.tenantId!;
     const { subject, year, resource_type } = req.query;
     
     try {
@@ -640,8 +988,13 @@ app.get('/search', authMiddleware, async (req: AuthRequest, res: Response) => {
         
         // Search documents
         if (!resource_type || resource_type === 'document') {
-            let query = 'SELECT id, filename as title, \'document\' as type, subject, year, uploaded_at FROM documents WHERE user_id = $1';
-            const params: any[] = [userId];
+            let query = `
+                SELECT d.id, d.filename as title, 'document' as type, d.subject, d.year, d.uploaded_at
+                FROM documents d
+                JOIN users u ON d.user_id = u.id
+                WHERE d.user_id = $1 AND u.tenant_id = $2
+            `;
+            const params: any[] = [userId, tenantId];
             
             if (subject) {
                 params.push(subject);
@@ -658,8 +1011,13 @@ app.get('/search', authMiddleware, async (req: AuthRequest, res: Response) => {
         
         // Search videos
         if (!resource_type || resource_type === 'video') {
-            let query = 'SELECT id, title, \'video\' as type, subject, year, uploaded_at FROM videos WHERE user_id = $1';
-            const params: any[] = [userId];
+            let query = `
+                SELECT v.id, v.title, 'video' as type, v.subject, v.year, v.created_at AS uploaded_at
+                FROM videos v
+                JOIN users u ON v.user_id = u.id
+                WHERE v.user_id = $1 AND u.tenant_id = $2
+            `;
+            const params: any[] = [userId, tenantId];
             
             if (subject) {
                 params.push(subject);
@@ -689,18 +1047,25 @@ app.get('/search', authMiddleware, async (req: AuthRequest, res: Response) => {
 });
 
 // Get all unique subjects (for filter dropdown)
-app.get('/subjects', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/subjects', authMiddleware, requirePermission('documents:read'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
+    const tenantId = req.tenantId!;
     
     try {
         const result = await pool.query(`
             SELECT DISTINCT subject FROM (
-                SELECT subject FROM documents WHERE user_id = $1 AND subject IS NOT NULL
+                SELECT d.subject
+                FROM documents d
+                JOIN users u ON d.user_id = u.id
+                WHERE d.user_id = $1 AND u.tenant_id = $2 AND d.subject IS NOT NULL
                 UNION
-                SELECT subject FROM videos WHERE user_id = $1 AND subject IS NOT NULL
+                SELECT v.subject
+                FROM videos v
+                JOIN users u ON v.user_id = u.id
+                WHERE v.user_id = $1 AND u.tenant_id = $2 AND v.subject IS NOT NULL
             ) AS combined
             ORDER BY subject
-        `, [userId]);
+        `, [userId, tenantId]);
         
         const subjects = result.rows.map(row => row.subject);
         res.json({ subjects });
@@ -713,7 +1078,7 @@ app.get('/subjects', authMiddleware, async (req: AuthRequest, res: Response) => 
 // ============ PHASE 3: QUIZ/ASSESSMENT ENDPOINTS ============
 
 // Generate quiz questions
-app.post('/quiz/generate', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.post('/quiz/generate', authMiddleware, requirePermission('assessments:write'), async (req: AuthRequest, res: Response) => {
     const {
         document_ids,
         video_ids,
@@ -754,7 +1119,7 @@ app.post('/quiz/generate', authMiddleware, async (req: AuthRequest, res: Respons
 });
 
 // Create assessment (save to database)
-app.post('/assessments/create', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.post('/assessments/create', authMiddleware, requirePermission('assessments:write'), async (req: AuthRequest, res: Response) => {
     const {
         title,
         document_ids,
@@ -797,13 +1162,18 @@ app.post('/assessments/create', authMiddleware, async (req: AuthRequest, res: Re
 });
 
 // Get user's assessments
-app.get('/assessments', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/assessments', authMiddleware, requirePermission('assessments:read'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
+    const tenantId = req.tenantId!;
     
     try {
         const result = await pool.query(
-            'SELECT id, title, difficulty, created_at FROM assessments WHERE user_id = $1 ORDER BY created_at DESC',
-            [userId]
+            `SELECT a.id, a.title, a.difficulty, a.created_at
+             FROM assessments a
+             JOIN users u ON a.user_id = u.id
+             WHERE a.user_id = $1 AND u.tenant_id = $2
+             ORDER BY a.created_at DESC`,
+            [userId, tenantId]
         );
         
         res.json(result.rows);
@@ -814,15 +1184,19 @@ app.get('/assessments', authMiddleware, async (req: AuthRequest, res: Response) 
 });
 
 // Get assessment with questions
-app.get('/assessments/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/assessments/:id', authMiddleware, requirePermission('assessments:read'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
+    const tenantId = req.tenantId!;
     const assessmentId = parseInt(req.params.id as string);
     
     try {
         // Get assessment
         const assessmentResult = await pool.query(
-            'SELECT * FROM assessments WHERE id = $1 AND user_id = $2',
-            [assessmentId, userId]
+            `SELECT a.*
+             FROM assessments a
+             JOIN users u ON a.user_id = u.id
+             WHERE a.id = $1 AND a.user_id = $2 AND u.tenant_id = $3`,
+            [assessmentId, userId, tenantId]
         );
         
         if (assessmentResult.rows.length === 0) {
@@ -847,8 +1221,9 @@ app.get('/assessments/:id', authMiddleware, async (req: AuthRequest, res: Respon
 });
 
 // Submit assessment for grading
-app.post('/assessments/:id/submit', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.post('/assessments/:id/submit', authMiddleware, requirePermission('assessments:read'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
+    const tenantId = req.tenantId!;
     const assessmentId = parseInt(req.params.id as string);
     const { answers } = req.body;  // [{ question_id, answer }]
     
@@ -857,8 +1232,11 @@ app.post('/assessments/:id/submit', authMiddleware, async (req: AuthRequest, res
         
         // Verify assessment belongs to user
         const assessmentResult = await pool.query(
-            'SELECT id FROM assessments WHERE id = $1 AND user_id = $2',
-            [assessmentId, userId]
+            `SELECT a.id
+             FROM assessments a
+             JOIN users u ON a.user_id = u.id
+             WHERE a.id = $1 AND a.user_id = $2 AND u.tenant_id = $3`,
+            [assessmentId, userId, tenantId]
         );
         
         if (assessmentResult.rows.length === 0) {
@@ -888,7 +1266,7 @@ app.post('/assessments/:id/submit', authMiddleware, async (req: AuthRequest, res
 });
 
 // Grade individual answer
-app.post('/quiz/grade-answer', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.post('/quiz/grade-answer', authMiddleware, requirePermission('assessments:read'), async (req: AuthRequest, res: Response) => {
     const { question_id, student_answer, provider, model } = req.body;
     
     try {
@@ -913,15 +1291,19 @@ app.post('/quiz/grade-answer', authMiddleware, async (req: AuthRequest, res: Res
 });
 
 // Get assessment results
-app.get('/assessments/:id/results', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/assessments/:id/results', authMiddleware, requirePermission('assessments:read'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
+    const tenantId = req.tenantId!;
     const assessmentId = parseInt(req.params.id as string);
     
     try {
         // Verify ownership
         const assessmentResult = await pool.query(
-            'SELECT title, difficulty FROM assessments WHERE id = $1 AND user_id = $2',
-            [assessmentId, userId]
+            `SELECT a.title, a.difficulty
+             FROM assessments a
+             JOIN users u ON a.user_id = u.id
+             WHERE a.id = $1 AND a.user_id = $2 AND u.tenant_id = $3`,
+            [assessmentId, userId, tenantId]
         );
         
         if (assessmentResult.rows.length === 0) {
@@ -970,20 +1352,27 @@ app.get('/assessments/:id/results', authMiddleware, async (req: AuthRequest, res
 });
 
 // Delete assessment
-app.delete('/assessments/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.delete('/assessments/:id', authMiddleware, requirePermission('assessments:delete'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
+    const tenantId = req.tenantId!;
     const assessmentId = parseInt(req.params.id as string);
     
     try {
         const result = await pool.query(
-            'DELETE FROM assessments WHERE id = $1 AND user_id = $2 RETURNING id',
-            [assessmentId, userId]
+            `DELETE FROM assessments a
+             USING users u
+             WHERE a.id = $1
+               AND a.user_id = $2
+               AND u.id = a.user_id
+               AND u.tenant_id = $3
+             RETURNING a.id`,
+            [assessmentId, userId, tenantId]
         );
         
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Assessment not found' });
         }
-        
+        await logAudit(req.userId, req.tenantId, 'assessment.delete', 'assessment', assessmentId);
         res.json({ success: true });
     } catch (error) {
         console.error('Delete assessment error:', error);
@@ -994,7 +1383,7 @@ app.delete('/assessments/:id', authMiddleware, async (req: AuthRequest, res: Res
 // ============ PHASE 4: MULTI-TENANT MANAGEMENT ============
 
 // Create tenant
-app.post('/admin/tenants', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.post('/admin/tenants', authMiddleware, requirePermission('tenant:manage'), async (req: AuthRequest, res: Response) => {
     const { name, domain, plan, max_users, max_storage_gb } = req.body;
     
     try {
@@ -1008,7 +1397,7 @@ app.post('/admin/tenants', authMiddleware, async (req: AuthRequest, res: Respons
                 max_storage_gb: max_storage_gb || 5
             }
         );
-        
+        await logAudit(req.userId, req.tenantId, 'tenant.create', 'tenant', (aiResponse.data as any)?.tenant_id, { name, domain, plan });
         res.json(aiResponse.data);
     } catch (error: any) {
         console.error('Create tenant error:', error.response?.data || error.message);
@@ -1020,10 +1409,20 @@ app.post('/admin/tenants', authMiddleware, async (req: AuthRequest, res: Respons
 });
 
 // List tenants
-app.get('/admin/tenants', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/admin/tenants', authMiddleware, requirePermission('tenant:read'), async (req: AuthRequest, res: Response) => {
     const { include_inactive } = req.query;
     
     try {
+        if (!isPlatformAdmin(req.userRole)) {
+            if (!req.tenantId) {
+                return res.status(400).json({ error: 'Tenant context missing' });
+            }
+            const aiResponse = await axios.get(
+                `${AI_SERVICE_URL}/ai/tenants/${req.tenantId}`
+            );
+            return res.json({ tenants: [aiResponse.data], total: 1 });
+        }
+
         const aiResponse = await axios.get(
             `${AI_SERVICE_URL}/ai/tenants`,
             { params: { include_inactive: include_inactive === 'true' } }
@@ -1037,8 +1436,9 @@ app.get('/admin/tenants', authMiddleware, async (req: AuthRequest, res: Response
 });
 
 // Get tenant details
-app.get('/admin/tenants/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/admin/tenants/:id', authMiddleware, requirePermission('tenant:read'), async (req: AuthRequest, res: Response) => {
     const tenantId = parseInt(req.params.id as string);
+    if (!requireTenantAccess(req, res, tenantId)) return;
     
     try {
         const aiResponse = await axios.get(
@@ -1055,8 +1455,9 @@ app.get('/admin/tenants/:id', authMiddleware, async (req: AuthRequest, res: Resp
 });
 
 // Update tenant
-app.put('/admin/tenants/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.put('/admin/tenants/:id', authMiddleware, requirePermission('tenant:manage'), async (req: AuthRequest, res: Response) => {
     const tenantId = parseInt(req.params.id as string);
+    if (!requireTenantAccess(req, res, tenantId)) return;
     const updates = req.body;
     
     try {
@@ -1064,7 +1465,7 @@ app.put('/admin/tenants/:id', authMiddleware, async (req: AuthRequest, res: Resp
             `${AI_SERVICE_URL}/ai/tenants/${tenantId}`,
             updates
         );
-        
+        await logAudit(req.userId, req.tenantId, 'tenant.update', 'tenant', tenantId, updates);
         res.json(aiResponse.data);
     } catch (error: any) {
         console.error('Update tenant error:', error);
@@ -1073,14 +1474,15 @@ app.put('/admin/tenants/:id', authMiddleware, async (req: AuthRequest, res: Resp
 });
 
 // Delete tenant
-app.delete('/admin/tenants/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.delete('/admin/tenants/:id', authMiddleware, requirePermission('tenant:manage'), async (req: AuthRequest, res: Response) => {
     const tenantId = parseInt(req.params.id as string);
+    if (!requireTenantAccess(req, res, tenantId)) return;
     
     try {
         const aiResponse = await axios.delete(
             `${AI_SERVICE_URL}/ai/tenants/${tenantId}`
         );
-        
+        await logAudit(req.userId, req.tenantId, 'tenant.delete', 'tenant', tenantId);
         res.json(aiResponse.data);
     } catch (error: any) {
         console.error('Delete tenant error:', error);
@@ -1089,8 +1491,9 @@ app.delete('/admin/tenants/:id', authMiddleware, async (req: AuthRequest, res: R
 });
 
 // Get tenant users
-app.get('/admin/tenants/:id/users', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/admin/tenants/:id/users', authMiddleware, requirePermission('tenant:read'), async (req: AuthRequest, res: Response) => {
     const tenantId = parseInt(req.params.id as string);
+    if (!requireTenantAccess(req, res, tenantId)) return;
     
     try {
         const aiResponse = await axios.get(
@@ -1105,9 +1508,10 @@ app.get('/admin/tenants/:id/users', authMiddleware, async (req: AuthRequest, res
 });
 
 // Invite user to tenant
-app.post('/admin/invitations', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.post('/admin/invitations', authMiddleware, requirePermission('tenant:manage'), async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
     const { tenant_id, email, role } = req.body;
+    if (!requireTenantAccess(req, res, Number(tenant_id))) return;
     
     try {
         const aiResponse = await axios.post(
@@ -1119,7 +1523,7 @@ app.post('/admin/invitations', authMiddleware, async (req: AuthRequest, res: Res
                 invited_by_user_id: userId
             }
         );
-        
+        await logAudit(req.userId, req.tenantId, 'tenant.invite', 'invitation', undefined, { tenant_id, email, role });
         res.json(aiResponse.data);
     } catch (error: any) {
         console.error('Invite user error:', error);
@@ -1128,8 +1532,9 @@ app.post('/admin/invitations', authMiddleware, async (req: AuthRequest, res: Res
 });
 
 // Check usage limits
-app.get('/admin/tenants/:id/limits', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/admin/tenants/:id/limits', authMiddleware, requirePermission('tenant:read'), async (req: AuthRequest, res: Response) => {
     const tenantId = parseInt(req.params.id as string);
+    if (!requireTenantAccess(req, res, tenantId)) return;
     
     try {
         const aiResponse = await axios.get(
@@ -1146,8 +1551,9 @@ app.get('/admin/tenants/:id/limits', authMiddleware, async (req: AuthRequest, re
 // ============ PHASE 4: ANALYTICS & REPORTING ============
 
 // Get analytics overview
-app.get('/admin/analytics/overview/:tenantId', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/admin/analytics/overview/:tenantId', authMiddleware, requirePermission('tenant:read'), async (req: AuthRequest, res: Response) => {
     const tenantId = parseInt(req.params.tenantId as string);
+    if (!requireTenantAccess(req, res, tenantId)) return;
     
     try {
         console.log(`Fetching analytics for tenant ${tenantId}`);
@@ -1164,8 +1570,9 @@ app.get('/admin/analytics/overview/:tenantId', authMiddleware, async (req: AuthR
 });
 
 // Get usage trends
-app.get('/admin/analytics/trends/:tenantId', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/admin/analytics/trends/:tenantId', authMiddleware, requirePermission('tenant:read'), async (req: AuthRequest, res: Response) => {
     const tenantId = parseInt(req.params.tenantId as string);
+    if (!requireTenantAccess(req, res, tenantId)) return;
     const days = parseInt(req.query.days as string) || 30;
     
     try {
@@ -1182,8 +1589,9 @@ app.get('/admin/analytics/trends/:tenantId', authMiddleware, async (req: AuthReq
 });
 
 // Get user activity
-app.get('/admin/analytics/users/:tenantId', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/admin/analytics/users/:tenantId', authMiddleware, requirePermission('tenant:read'), async (req: AuthRequest, res: Response) => {
     const tenantId = parseInt(req.params.tenantId as string);
+    if (!requireTenantAccess(req, res, tenantId)) return;
     const limit = parseInt(req.query.limit as string) || 50;
     
     try {
@@ -1200,8 +1608,9 @@ app.get('/admin/analytics/users/:tenantId', authMiddleware, async (req: AuthRequ
 });
 
 // Get popular documents
-app.get('/admin/analytics/documents/:tenantId', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/admin/analytics/documents/:tenantId', authMiddleware, requirePermission('tenant:read'), async (req: AuthRequest, res: Response) => {
     const tenantId = parseInt(req.params.tenantId as string);
+    if (!requireTenantAccess(req, res, tenantId)) return;
     const limit = parseInt(req.query.limit as string) || 20;
     
     try {
@@ -1218,8 +1627,9 @@ app.get('/admin/analytics/documents/:tenantId', authMiddleware, async (req: Auth
 });
 
 // Get system health
-app.get('/admin/analytics/health/:tenantId', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/admin/analytics/health/:tenantId', authMiddleware, requirePermission('tenant:read'), async (req: AuthRequest, res: Response) => {
     const tenantId = parseInt(req.params.tenantId as string);
+    if (!requireTenantAccess(req, res, tenantId)) return;
     
     try {
         const aiResponse = await axios.get(
@@ -1234,8 +1644,9 @@ app.get('/admin/analytics/health/:tenantId', authMiddleware, async (req: AuthReq
 });
 
 // Generate comprehensive report
-app.get('/admin/analytics/report/:tenantId', authMiddleware, async (req: AuthRequest, res: Response) => {
+app.get('/admin/analytics/report/:tenantId', authMiddleware, requirePermission('tenant:read'), async (req: AuthRequest, res: Response) => {
     const tenantId = parseInt(req.params.tenantId as string);
+    if (!requireTenantAccess(req, res, tenantId)) return;
     const reportType = req.query.report_type as string || 'monthly';
     
     try {
@@ -1254,6 +1665,80 @@ app.get('/admin/analytics/report/:tenantId', authMiddleware, async (req: AuthReq
 });
 
 // ============ PHASE 5: ADVANCED EMBEDDINGS ============
+
+// ============ CONNECTORS ============
+
+// ============ USER SETTINGS ============
+
+app.get('/settings', authMiddleware, async (req: AuthRequest, res: Response) => {
+    const userId = req.userId!;
+    try {
+        const result = await pool.query(
+            'SELECT settings, updated_at FROM user_settings WHERE user_id = $1',
+            [userId]
+        );
+        if (result.rows.length === 0) {
+            return res.json({ settings: {}, updated_at: null });
+        }
+        return res.json(result.rows[0]);
+    } catch (error) {
+        console.error('Get settings error:', error);
+        return res.status(500).json({ error: 'Failed to fetch settings' });
+    }
+});
+
+app.post('/settings', authMiddleware, async (req: AuthRequest, res: Response) => {
+    const userId = req.userId!;
+    const incoming = req.body?.settings ?? req.body ?? {};
+    try {
+        const result = await pool.query(
+            `INSERT INTO user_settings (user_id, settings, updated_at)
+             VALUES ($1, $2::jsonb, NOW())
+             ON CONFLICT (user_id)
+             DO UPDATE SET settings = EXCLUDED.settings, updated_at = NOW()
+             RETURNING settings, updated_at`,
+            [userId, JSON.stringify(incoming)]
+        );
+        await logAudit(req.userId, req.tenantId, 'settings.update', 'settings', userId);
+        return res.json(result.rows[0]);
+    } catch (error) {
+        console.error('Save settings error:', error);
+        return res.status(500).json({ error: 'Failed to save settings' });
+    }
+});
+
+app.get('/connectors', authMiddleware, requirePermission('documents:read'), async (req: AuthRequest, res: Response) => {
+    try {
+        const aiResponse = await axios.get(`${AI_SERVICE_URL}/ai/connectors`);
+        res.json(aiResponse.data);
+    } catch (error: any) {
+        console.error('List connectors error:', error.response?.data || error.message);
+        res.status(500).json({ error: 'Failed to list connectors' });
+    }
+});
+
+app.post('/connectors/ingest', authMiddleware, requirePermission('documents:write'), async (req: AuthRequest, res: Response) => {
+    try {
+        const aiResponse = await axios.post(`${AI_SERVICE_URL}/ai/connectors/ingest`, {
+            ...req.body,
+            user_id: req.userId,
+            tenant_id: req.tenantId
+        });
+        await logAudit(req.userId, req.tenantId, 'connector.ingest', 'connector', undefined, {
+            connector: req.body?.connector,
+            resource: req.body?.resource,
+            provider: req.body?.provider,
+            model: req.body?.model
+        });
+        res.json(aiResponse.data);
+    } catch (error: any) {
+        console.error('Connector ingest error:', error.response?.data || error.message);
+        res.status(error.response?.status || 500).json({
+            error: 'Failed connector ingestion',
+            details: error.response?.data?.detail || error.message
+        });
+    }
+});
 
 // List embedding providers
 app.get('/embeddings/providers', authMiddleware, async (req: AuthRequest, res: Response) => {
@@ -1470,7 +1955,14 @@ app.post('/llms/compare', authMiddleware, async (req: AuthRequest, res: Response
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
-    console.log(`✅ Backend server running on http://localhost:${PORT}`);
-    console.log(`✅ AI Service URL: ${AI_SERVICE_URL}`);
-});
+ensureBackendTables()
+    .then(() => {
+        app.listen(PORT, () => {
+            console.log(`✅ Backend server running on http://localhost:${PORT}`);
+            console.log(`✅ AI Service URL: ${AI_SERVICE_URL}`);
+        });
+    })
+    .catch((error) => {
+        console.error('❌ Failed to initialize backend tables:', error);
+        process.exit(1);
+    });

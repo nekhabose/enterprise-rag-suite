@@ -5,7 +5,12 @@ import psycopg2
 from psycopg2.extras import execute_values, RealDictCursor, Json
 import PyPDF2
 import os
+import json
+import re
+import io
+from urllib.parse import urlparse
 from typing import List, Optional, Dict, Any
+import requests
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -28,6 +33,7 @@ from vector_stores import VectorStoreFactory
 
 # Phase 7 imports
 from llms import LLMFactory
+from rank_bm25 import BM25Okapi
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
@@ -122,6 +128,9 @@ class RAGAnswerRequest(BaseModel):
     document_ids: Optional[List[int]] = None
     provider: str = "groq"
     model: Optional[str] = None
+    retrieval_strategy: str = "semantic"  # semantic, bm25, hybrid
+    enable_reranking: bool = False
+    top_k: int = 5
 
 # Phase 2: YouTube Video Ingestion
 class IngestYouTubeRequest(BaseModel):
@@ -187,6 +196,18 @@ class InviteUserRequest(BaseModel):
     email: str
     role: str = "member"
     invited_by_user_id: int  # "openai" or "groq"
+
+class ConnectorIngestRequest(BaseModel):
+    connector: str  # google_drive, s3, azure_blob, salesforce, lms
+    resource: str
+    user_id: int
+    tenant_id: Optional[int] = None
+    provider: str = "groq"
+    model: Optional[str] = None
+    embedding_model: Optional[str] = None
+    chunking_strategy: str = "fixed_size"
+    chunking_params: dict = {}
+    metadata: Dict[str, Any] = {}
 
 # ============ HELPER FUNCTIONS ============
 
@@ -386,6 +407,155 @@ def get_embedding(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting embedding: {str(e)}")
 
+def _tokenize_for_bm25(text: str) -> List[str]:
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+def _fetch_user_chunks(
+    conn,
+    user_id: int,
+    document_ids: Optional[List[int]] = None,
+    limit: int = 400
+) -> List[Dict[str, Any]]:
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    query = """
+        SELECT c.id, c.content, c.document_id, c.video_id, c.chunk_index,
+               COALESCE(d.filename, v.title, 'Unknown source') AS filename
+        FROM chunks c
+        LEFT JOIN documents d ON c.document_id = d.id
+        LEFT JOIN videos v ON c.video_id = v.id
+        WHERE (d.user_id = %s OR v.user_id = %s)
+    """
+    params: List[Any] = [user_id, user_id]
+
+    if document_ids:
+        query += " AND c.document_id = ANY(%s)"
+        params.append(document_ids)
+
+    query += " ORDER BY c.created_at DESC LIMIT %s"
+    params.append(limit)
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    cur.close()
+    return rows
+
+def _semantic_search_chunks(
+    conn,
+    user_id: int,
+    question_embedding: List[float],
+    document_ids: Optional[List[int]] = None,
+    top_k: int = 5
+) -> List[Dict[str, Any]]:
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    query = """
+        SELECT c.id, c.content, c.document_id, c.video_id, c.chunk_index,
+               COALESCE(d.filename, v.title, 'Unknown source') AS filename,
+               (c.embedding <=> %s::vector) AS distance
+        FROM chunks c
+        LEFT JOIN documents d ON c.document_id = d.id
+        LEFT JOIN videos v ON c.video_id = v.id
+        WHERE (d.user_id = %s OR v.user_id = %s)
+    """
+    params: List[Any] = [question_embedding, user_id, user_id]
+
+    if document_ids:
+        query += " AND c.document_id = ANY(%s)"
+        params.append(document_ids)
+
+    query += " ORDER BY c.embedding <=> %s::vector LIMIT %s"
+    params.extend([question_embedding, max(top_k, 1)])
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    cur.close()
+    return rows
+
+def _bm25_search_chunks(
+    conn,
+    user_id: int,
+    question: str,
+    document_ids: Optional[List[int]] = None,
+    top_k: int = 5
+) -> List[Dict[str, Any]]:
+    candidates = _fetch_user_chunks(conn, user_id, document_ids=document_ids, limit=600)
+    if not candidates:
+        return []
+
+    corpus_tokens = [_tokenize_for_bm25(row["content"]) for row in candidates]
+    bm25 = BM25Okapi(corpus_tokens)
+    query_tokens = _tokenize_for_bm25(question)
+    scores = bm25.get_scores(query_tokens)
+
+    ranked = sorted(
+        zip(candidates, scores),
+        key=lambda item: item[1],
+        reverse=True
+    )[:max(top_k, 1)]
+
+    results: List[Dict[str, Any]] = []
+    for row, score in ranked:
+        out = dict(row)
+        out["bm25_score"] = float(score)
+        results.append(out)
+    return results
+
+def _hybrid_search_chunks(
+    conn,
+    user_id: int,
+    question: str,
+    question_embedding: List[float],
+    document_ids: Optional[List[int]] = None,
+    top_k: int = 5
+) -> List[Dict[str, Any]]:
+    semantic = _semantic_search_chunks(
+        conn,
+        user_id,
+        question_embedding,
+        document_ids=document_ids,
+        top_k=max(top_k * 3, 15)
+    )
+    lexical = _bm25_search_chunks(
+        conn,
+        user_id,
+        question,
+        document_ids=document_ids,
+        top_k=max(top_k * 3, 15)
+    )
+
+    # Reciprocal rank fusion
+    rrf_k = 60.0
+    fused: Dict[int, Dict[str, Any]] = {}
+    for idx, row in enumerate(semantic):
+        key = int(row["id"])
+        fused.setdefault(key, dict(row))
+        fused[key]["hybrid_score"] = fused[key].get("hybrid_score", 0.0) + (1.0 / (rrf_k + idx + 1))
+
+    for idx, row in enumerate(lexical):
+        key = int(row["id"])
+        fused.setdefault(key, dict(row))
+        fused[key]["hybrid_score"] = fused[key].get("hybrid_score", 0.0) + (1.0 / (rrf_k + idx + 1))
+
+    ranked = sorted(fused.values(), key=lambda row: row.get("hybrid_score", 0.0), reverse=True)
+    return ranked[:max(top_k, 1)]
+
+def _rerank_chunks(question: str, chunks: List[Dict[str, Any]], top_k: int = 5) -> List[Dict[str, Any]]:
+    q_tokens = set(_tokenize_for_bm25(question))
+    if not q_tokens:
+        return chunks[:max(top_k, 1)]
+
+    rescored: List[Dict[str, Any]] = []
+    for row in chunks:
+        content_tokens = _tokenize_for_bm25(row.get("content", ""))
+        if not content_tokens:
+            lexical = 0.0
+        else:
+            overlap = sum(1 for t in content_tokens if t in q_tokens)
+            lexical = overlap / max(len(content_tokens), 1)
+        out = dict(row)
+        out["rerank_score"] = lexical
+        rescored.append(out)
+
+    rescored.sort(key=lambda r: r.get("rerank_score", 0.0), reverse=True)
+    return rescored[:max(top_k, 1)]
+
 # ============ ENDPOINTS ============
 @app.get("/ai/chunking-strategies")
 async def list_chunking_strategies():
@@ -394,6 +564,22 @@ async def list_chunking_strategies():
     return {
         "strategies": strategies,
         "default": "fixed_size"
+    }
+
+@app.get("/ai/retrieval-strategies")
+async def list_retrieval_strategies():
+    return {
+        "strategies": {
+            "semantic": "Vector similarity search using embeddings",
+            "bm25": "Lexical BM25 retrieval",
+            "hybrid": "Reciprocal-rank-fusion over semantic + BM25"
+        },
+        "reranking": {
+            "supported": True,
+            "default": False,
+            "method": "token-overlap"
+        },
+        "default": "semantic"
     }
 
 @app.get("/")
@@ -406,6 +592,359 @@ def root():
             "groq": groq_client is not None
         }
     }
+
+CONNECTOR_REQUIREMENTS = {
+    "google_drive": ["GOOGLE_DRIVE_ACCESS_TOKEN"],
+    "s3": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"],
+    "azure_blob": ["AZURE_STORAGE_CONNECTION_STRING"],
+    "salesforce": ["SALESFORCE_INSTANCE_URL", "SALESFORCE_ACCESS_TOKEN"],
+    "lms": ["LMS_BASE_URL", "LMS_API_TOKEN"]
+}
+
+def _resource_to_dict(raw_resource: str) -> Dict[str, Any]:
+    try:
+        parsed = json.loads(raw_resource)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    return {"value": raw_resource}
+
+def _extract_google_drive_file_id(resource: str, resource_obj: Dict[str, Any]) -> str:
+    if resource_obj.get("file_id"):
+        return str(resource_obj["file_id"])
+    if "/d/" in resource:
+        return resource.split("/d/")[1].split("/")[0]
+    if "id=" in resource:
+        return resource.split("id=")[1].split("&")[0]
+    if len(resource) > 20 and "/" not in resource:
+        return resource
+    raise ValueError("Unable to parse Google Drive file id from resource")
+
+def _decode_bytes_to_text(payload: bytes, mime_type: str = "text/plain") -> str:
+    lowered = (mime_type or "").lower()
+    if "pdf" in lowered:
+        try:
+            reader = PyPDF2.PdfReader(io.BytesIO(payload))
+            return "\n".join([page.extract_text() or "" for page in reader.pages])
+        except Exception as e:
+            raise ValueError(f"Failed parsing PDF bytes: {e}")
+    for encoding in ("utf-8", "utf-16", "latin-1"):
+        try:
+            return payload.decode(encoding)
+        except Exception:
+            continue
+    return payload.decode("utf-8", errors="ignore")
+
+def _fetch_google_drive(resource: str, resource_obj: Dict[str, Any], metadata: Dict[str, Any]) -> Dict[str, Any]:
+    token = metadata.get("access_token") or os.getenv("GOOGLE_DRIVE_ACCESS_TOKEN")
+    if not token:
+        raise ValueError("GOOGLE_DRIVE_ACCESS_TOKEN not configured")
+    file_id = _extract_google_drive_file_id(resource, resource_obj)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    meta_resp = requests.get(
+        f"https://www.googleapis.com/drive/v3/files/{file_id}",
+        params={"fields": "id,name,mimeType"},
+        headers=headers,
+        timeout=30
+    )
+    meta_resp.raise_for_status()
+    info = meta_resp.json()
+    name = info.get("name") or f"drive-{file_id}"
+    mime_type = info.get("mimeType", "text/plain")
+
+    if mime_type.startswith("application/vnd.google-apps"):
+        export_mime = "text/plain"
+        export_resp = requests.get(
+            f"https://www.googleapis.com/drive/v3/files/{file_id}/export",
+            params={"mimeType": export_mime},
+            headers=headers,
+            timeout=60
+        )
+        export_resp.raise_for_status()
+        text = export_resp.text
+    else:
+        download_resp = requests.get(
+            f"https://www.googleapis.com/drive/v3/files/{file_id}",
+            params={"alt": "media"},
+            headers=headers,
+            timeout=120
+        )
+        download_resp.raise_for_status()
+        text = _decode_bytes_to_text(download_resp.content, mime_type=mime_type)
+
+    return {
+        "filename": name,
+        "text": text,
+        "file_type": "connector/google_drive",
+        "source_uri": f"gdrive://{file_id}",
+        "source_meta": info
+    }
+
+def _fetch_s3(resource: str, resource_obj: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        import boto3
+    except Exception as e:
+        raise ValueError(f"S3 connector requires boto3: {e}")
+
+    value = resource_obj.get("value", resource)
+    bucket = resource_obj.get("bucket")
+    key = resource_obj.get("key")
+
+    if value.startswith("s3://"):
+        path = value[5:]
+        bucket = bucket or path.split("/", 1)[0]
+        key = key or path.split("/", 1)[1]
+
+    if not bucket or not key:
+        raise ValueError("S3 resource must include bucket and key (or s3://bucket/key)")
+
+    client = boto3.client(
+        "s3",
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        region_name=os.getenv("AWS_REGION", "us-east-1")
+    )
+    obj = client.get_object(Bucket=bucket, Key=key)
+    payload = obj["Body"].read()
+    content_type = obj.get("ContentType", "text/plain")
+    text = _decode_bytes_to_text(payload, mime_type=content_type)
+    filename = key.split("/")[-1] or f"{bucket}-{key.replace('/', '_')}"
+    return {
+        "filename": filename,
+        "text": text,
+        "file_type": "connector/s3",
+        "source_uri": f"s3://{bucket}/{key}",
+        "source_meta": {"bucket": bucket, "key": key, "content_type": content_type}
+    }
+
+def _fetch_azure_blob(resource: str, resource_obj: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from azure.storage.blob import BlobServiceClient
+    except Exception as e:
+        raise ValueError(f"Azure Blob connector requires azure-storage-blob: {e}")
+
+    connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    if not connection_string:
+        raise ValueError("AZURE_STORAGE_CONNECTION_STRING not configured")
+
+    container = resource_obj.get("container")
+    blob = resource_obj.get("blob")
+    value = resource_obj.get("value", resource)
+
+    if value.startswith("https://") and not (container and blob):
+        parsed = urlparse(value)
+        parts = parsed.path.strip("/").split("/", 1)
+        if len(parts) == 2:
+            container = parts[0]
+            blob = parts[1]
+
+    if not container or not blob:
+        raise ValueError("Azure resource must include container and blob (or blob URL)")
+
+    client = BlobServiceClient.from_connection_string(connection_string)
+    blob_client = client.get_blob_client(container=container, blob=blob)
+    downloader = blob_client.download_blob()
+    payload = downloader.readall()
+    text = _decode_bytes_to_text(payload)
+    filename = blob.split("/")[-1] or f"{container}-{blob.replace('/', '_')}"
+    return {
+        "filename": filename,
+        "text": text,
+        "file_type": "connector/azure_blob",
+        "source_uri": f"azure://{container}/{blob}",
+        "source_meta": {"container": container, "blob": blob}
+    }
+
+def _fetch_salesforce(resource: str, resource_obj: Dict[str, Any]) -> Dict[str, Any]:
+    instance_url = os.getenv("SALESFORCE_INSTANCE_URL", "").rstrip("/")
+    token = os.getenv("SALESFORCE_ACCESS_TOKEN")
+    if not instance_url or not token:
+        raise ValueError("SALESFORCE_INSTANCE_URL and SALESFORCE_ACCESS_TOKEN are required")
+
+    headers = {"Authorization": f"Bearer {token}"}
+    api_version = resource_obj.get("api_version", "v60.0")
+    if resource_obj.get("soql"):
+        resp = requests.get(
+            f"{instance_url}/services/data/{api_version}/query",
+            params={"q": resource_obj["soql"]},
+            headers=headers,
+            timeout=60
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = json.dumps(data, indent=2)
+        filename = resource_obj.get("filename", "salesforce-query.json")
+        source_uri = f"salesforce://query/{api_version}"
+    else:
+        path = resource_obj.get("path") or resource
+        if not path.startswith("/"):
+            path = f"/{path}"
+        resp = requests.get(f"{instance_url}{path}", headers=headers, timeout=60)
+        resp.raise_for_status()
+        content_type = resp.headers.get("content-type", "application/json")
+        text = resp.text if "json" not in content_type else json.dumps(resp.json(), indent=2)
+        filename = resource_obj.get("filename", "salesforce-resource.json")
+        source_uri = f"salesforce://{path}"
+    return {
+        "filename": filename,
+        "text": text,
+        "file_type": "connector/salesforce",
+        "source_uri": source_uri,
+        "source_meta": {"instance_url": instance_url}
+    }
+
+def _fetch_lms(resource: str, resource_obj: Dict[str, Any]) -> Dict[str, Any]:
+    base_url = os.getenv("LMS_BASE_URL", "").rstrip("/")
+    token = os.getenv("LMS_API_TOKEN")
+    if not base_url or not token:
+        raise ValueError("LMS_BASE_URL and LMS_API_TOKEN are required")
+
+    path = resource_obj.get("path") or resource
+    if not path.startswith("/"):
+        path = f"/{path}"
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.get(f"{base_url}{path}", headers=headers, timeout=60)
+    resp.raise_for_status()
+    content_type = resp.headers.get("content-type", "application/json")
+    text = resp.text if "json" not in content_type else json.dumps(resp.json(), indent=2)
+    filename = resource_obj.get("filename", "lms-resource.json")
+    return {
+        "filename": filename,
+        "text": text,
+        "file_type": "connector/lms",
+        "source_uri": f"lms://{path}",
+        "source_meta": {"base_url": base_url, "path": path}
+    }
+
+def _fetch_connector_content(connector: str, resource: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    resource_obj = _resource_to_dict(resource)
+    if connector == "google_drive":
+        return _fetch_google_drive(resource, resource_obj, metadata)
+    if connector == "s3":
+        return _fetch_s3(resource, resource_obj)
+    if connector == "azure_blob":
+        return _fetch_azure_blob(resource, resource_obj)
+    if connector == "salesforce":
+        return _fetch_salesforce(resource, resource_obj)
+    if connector == "lms":
+        return _fetch_lms(resource, resource_obj)
+    raise ValueError(f"Unsupported connector: {connector}")
+
+def _connector_status(name: str) -> Dict[str, Any]:
+    required = CONNECTOR_REQUIREMENTS[name]
+    missing = [env for env in required if not os.getenv(env)]
+    return {
+        "name": name,
+        "configured": len(missing) == 0,
+        "missing_env": missing
+    }
+
+@app.get("/ai/connectors")
+async def list_connectors():
+    return {
+        "connectors": [_connector_status(name) for name in CONNECTOR_REQUIREMENTS.keys()]
+    }
+
+@app.post("/ai/connectors/ingest")
+async def ingest_from_connector(request: ConnectorIngestRequest):
+    connector = request.connector.strip().lower()
+    if connector not in CONNECTOR_REQUIREMENTS:
+        raise HTTPException(status_code=400, detail=f"Unknown connector: {connector}")
+
+    status = _connector_status(connector)
+    if not status["configured"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Connector '{connector}' not configured. Missing env vars: {', '.join(status['missing_env'])}"
+        )
+
+    try:
+        source = _fetch_connector_content(connector, request.resource, request.metadata or {})
+        text = (source.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Connector returned empty content")
+
+        embedding_provider, llm_model = resolve_provider_and_model(request.provider, request.model)
+        chunk_objects = chunk_text_with_strategy(
+            text,
+            strategy=request.chunking_strategy,
+            **(request.chunking_params or {})
+        )
+        if not chunk_objects:
+            raise HTTPException(status_code=400, detail="No chunks created from connector content")
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            INSERT INTO documents (user_id, filename, file_path, file_type)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                request.user_id,
+                source["filename"],
+                source["source_uri"],
+                source.get("file_type", f"connector/{connector}")
+            )
+        )
+        document_id = cur.fetchone()[0]
+
+        chunk_data = []
+        for chunk_obj in chunk_objects:
+            embedding = get_embedding(
+                chunk_obj.content,
+                provider=embedding_provider,
+                model=llm_model,
+                embedding_model=request.embedding_model
+            )
+            merged_metadata = {
+                **(chunk_obj.metadata or {}),
+                "connector": connector,
+                "source_uri": source["source_uri"],
+                "source_meta": source.get("source_meta", {}),
+                "tenant_id": request.tenant_id
+            }
+            chunk_data.append((
+                document_id,
+                None,
+                chunk_obj.content,
+                embedding,
+                chunk_obj.index,
+                Json(merged_metadata)
+            ))
+
+        execute_values(
+            cur,
+            """
+            INSERT INTO chunks (document_id, video_id, content, embedding, chunk_index, metadata)
+            VALUES %s
+            """,
+            chunk_data
+        )
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "connector": connector,
+            "document_id": document_id,
+            "filename": source["filename"],
+            "chunks_created": len(chunk_objects),
+            "provider": embedding_provider,
+            "model": llm_model
+        }
+    except HTTPException:
+        raise
+    except requests.HTTPError as http_err:
+        raise HTTPException(status_code=502, detail=f"Connector API error: {http_err}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Connector ingestion failed: {str(e)}")
 
 @app.post("/ai/index-document")
 async def index_document(request: IndexDocumentRequest):
@@ -493,6 +1032,9 @@ async def rag_answer(request: RAGAnswerRequest):
             f"Answering question using provider={llm_provider}, "
             f"model={llm_model or 'default'}: {request.question}"
         )
+        retrieval_strategy = (request.retrieval_strategy or "semantic").lower()
+        if retrieval_strategy not in {"semantic", "bm25", "hybrid"}:
+            raise HTTPException(status_code=400, detail=f"Unknown retrieval strategy: {retrieval_strategy}")
         
         # Get question embedding
         question_embedding = get_embedding(
@@ -503,29 +1045,35 @@ async def rag_answer(request: RAGAnswerRequest):
         
         # Connect to database
         conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Build query
-        query = """
-            SELECT c.content, c.document_id, d.filename
-            FROM chunks c
-            LEFT JOIN documents d ON c.document_id = d.id
-            WHERE d.user_id = %s
-        """
-        params = [request.user_id]
-        
-        if request.document_ids:
-            query += " AND c.document_id = ANY(%s)"
-            params.append(request.document_ids)
-        
-        query += """
-            ORDER BY c.embedding <=> %s::vector
-            LIMIT 5
-        """
-        params.append(question_embedding)
-        
-        cur.execute(query, params)
-        relevant_chunks = cur.fetchall()
+        if retrieval_strategy == "semantic":
+            relevant_chunks = _semantic_search_chunks(
+                conn,
+                request.user_id,
+                question_embedding,
+                request.document_ids,
+                top_k=request.top_k
+            )
+        elif retrieval_strategy == "bm25":
+            relevant_chunks = _bm25_search_chunks(
+                conn,
+                request.user_id,
+                request.question,
+                request.document_ids,
+                top_k=request.top_k
+            )
+        else:
+            relevant_chunks = _hybrid_search_chunks(
+                conn,
+                request.user_id,
+                request.question,
+                question_embedding,
+                request.document_ids,
+                top_k=request.top_k
+            )
+
+        if request.enable_reranking and relevant_chunks:
+            relevant_chunks = _rerank_chunks(request.question, relevant_chunks, top_k=request.top_k)
         
         print(f"Found {len(relevant_chunks)} relevant chunks")
         
@@ -589,7 +1137,6 @@ Please provide a clear, helpful answer based on the context above. Cite your sou
             for chunk in relevant_chunks
         ]
         
-        cur.close()
         conn.close()
         
         print("Answer generated successfully")
@@ -598,6 +1145,8 @@ Please provide a clear, helpful answer based on the context above. Cite your sou
             "answer": answer,
             "sources": sources,
             "chunks_used": len(relevant_chunks),
+            "retrieval_strategy": retrieval_strategy,
+            "reranking_enabled": request.enable_reranking,
             "provider": llm_provider,
             "model": llm.get_model()
         }

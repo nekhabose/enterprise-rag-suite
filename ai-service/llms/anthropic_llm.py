@@ -14,7 +14,7 @@ class AnthropicLLM(BaseLLM):
     def __init__(
         self,
         api_key: str,
-        model: str = "claude-3-sonnet-20240229",
+        model: str = "claude-3-5-sonnet-latest",
         **kwargs
     ):
         """

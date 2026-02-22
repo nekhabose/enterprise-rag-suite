@@ -11,11 +11,12 @@ A production-grade educational platform featuring a modular Retrieval-Augmented 
 - 🎯 **Multi-Provider Support** - OpenAI, Groq, and more
 
 ### Advanced RAG Features
-- **7 Chunking Strategies**: Fixed-size, Page-based, Paragraph, Semantic, Parent-child, Sentence, Recursive
-- **Multiple Embedding Models**: OpenAI, Sentence Transformers, HuggingFace (coming soon)
-- **Vector Store Options**: PostgreSQL+pgvector, FAISS, ChromaDB, Pinecone (coming soon)
-- **Retrieval Strategies**: Semantic, BM25, Hybrid (coming soon)
-- **LLM Providers**: OpenAI GPT, Groq Llama, Anthropic Claude, Google Gemini (coming soon)
+- **8 Chunking Strategies**: Fixed-size, Overlap, Page-based, Paragraph, Semantic, Parent-child, Sentence, Recursive
+- **Multiple Embedding Models**: OpenAI, Sentence Transformers, Cohere, HuggingFace
+- **Vector Store Options**: PostgreSQL+pgvector, FAISS, ChromaDB, Qdrant, Pinecone
+- **Retrieval Strategies**: Semantic, BM25, Hybrid + optional reranking
+- **LLM Providers**: OpenAI (GPT-4o/GPT-4.1/GPT-5), Groq, Anthropic Claude 3.5, Gemini, Cohere
+- **Security Controls**: Tenant-aware auth context, role-based permission middleware, and audit logging
 
 ## 🏗️ Architecture
 
@@ -54,22 +55,24 @@ A production-grade educational platform featuring a modular Retrieval-Augmented 
 │  │     └─ Recursive       (Multi-level splits)       │  │
 │  │                                                     │  │
 │  │  2. EMBEDDING (Factory Pattern)                    │  │
-│  │     ├─ OpenAI          (text-embedding-ada-002)   │  │
-│  │     ├─ Simple Text     (Character-based)          │  │
-│  │     └─ [More coming]   (Sentence Transformers)    │  │
+│  │     ├─ OpenAI          (text-embedding-3-small)   │  │
+│  │     ├─ SentenceTransformer / Cohere / HF          │  │
+│  │     └─ Groq fallback   (local normalized vector)  │  │
 │  │                                                     │  │
 │  │  3. VECTOR STORE                                   │  │
 │  │     ├─ PostgreSQL      (pgvector extension)       │  │
-│  │     └─ [More coming]   (FAISS, ChromaDB, etc)     │  │
+│  │     ├─ FAISS / ChromaDB / Qdrant                  │  │
+│  │     └─ Pinecone                                   │  │
 │  │                                                     │  │
 │  │  4. RETRIEVAL                                      │  │
-│  │     ├─ Semantic        (Cosine similarity)        │  │
-│  │     └─ [More coming]   (BM25, Hybrid, MMR)        │  │
+│  │     ├─ Semantic        (vector similarity)        │  │
+│  │     ├─ BM25            (lexical)                  │  │
+│  │     └─ Hybrid + optional reranking                │  │
 │  │                                                     │  │
 │  │  5. LLM GENERATION                                 │  │
-│  │     ├─ OpenAI          (GPT-3.5, GPT-4)           │  │
+│  │     ├─ OpenAI          (GPT-4o / GPT-4.1 / GPT-5)│  │
 │  │     ├─ Groq            (Llama 3.3 70B)            │  │
-│  │     └─ [More coming]   (Claude, Gemini, Cohere)   │  │
+│  │     └─ Claude 3.5 / Gemini / Cohere               │  │
 │  └───────────────────────────────────────────────────┘  │
 └────────────────────┬────────────────────────────────────┘
                      │
@@ -135,6 +138,11 @@ npm install
 # Configure environment
 cp .env.example .env
 ```
+
+### Environment Files (where to add keys)
+- `backend/.env`: `DATABASE_URL`, `JWT_SECRET`, `PORT`, `AI_SERVICE_URL`
+- `ai-service/.env`: provider keys (`OPENAI_API_KEY`, `GROQ_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `COHERE_API_KEY`, `TOGETHER_API_KEY`) plus connector keys and `AI_SERVICE_PORT`
+- `frontend/.env`: `PORT`, `REACT_APP_API_URL`
 
 ### Running the Application
 
@@ -202,6 +210,23 @@ Visit your configured frontend URL (default **http://localhost:3001**) in your b
 - `GET /ai/chunking-strategies` - List available strategies
 - `GET /ai/providers` - List available AI providers
 
+#### Connectors
+- `GET /connectors` - Connector configuration status
+- `POST /connectors/ingest` - Pull and ingest external content (Google Drive, S3, Azure Blob, Salesforce, LMS)
+
+Example payload:
+```json
+{
+  "connector": "s3",
+  "resource": "s3://my-bucket/path/to/doc.txt",
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "embedding_model": "openai",
+  "chunking_strategy": "overlap",
+  "chunking_params": { "chunk_size": 500, "overlap": 80 }
+}
+```
+
 ## 🛠️ Tech Stack
 
 ### Backend Services
@@ -218,7 +243,7 @@ Visit your configured frontend URL (default **http://localhost:3001**) in your b
 | **Chunking** | 7 strategies | Factory pattern |
 | **Embeddings** | OpenAI, Simple Text | Extensible |
 | **Vector DB** | pgvector | IVFFlat indexing |
-| **Retrieval** | Semantic (cosine) | More coming |
+| **Retrieval** | Semantic, BM25, Hybrid, Rerank toggle | Configurable in UI |
 | **LLM** | OpenAI GPT, Groq Llama | Multi-provider |
 
 ### Frontend
