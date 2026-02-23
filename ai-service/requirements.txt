@@ -1,67 +1,15 @@
-# Core Framework
-fastapi==0.109.0
-uvicorn==0.27.0
-pydantic==2.6.3
-python-dotenv==1.0.0
+fastapi==0.115.0
+uvicorn[standard]==0.24.0
+python-jose[cryptography]==3.3.0
 python-multipart==0.0.9
-httpx==0.27.2
-requests==2.31.0
-
-# Database
-psycopg2-binary==2.9.9
-
-# Document Processing
-PyPDF2==3.0.1
-
-# AI/ML - Embeddings
-openai==1.12.0
-sentence-transformers==2.3.1
-cohere==4.47
-
-# Phase 5: Advanced Embeddings
-transformers==4.36.2
-torch==2.1.2
-huggingface-hub==0.20.3
-voyageai==0.2.1
-InstructorEmbedding==1.0.1
-
-# AI/ML - LLMs  
-groq==0.4.2
-anthropic==0.18.1
-google-generativeai==0.3.2
-
-# Phase 7: Additional LLM Providers
-together==1.0.1
-replicate==0.22.0
-huggingface_hub==0.20.3
-
-# Vector Stores
-faiss-cpu==1.7.4
-chromadb==0.4.22
-pinecone-client==3.0.3
-
-# Phase 6: Advanced Vector Stores
-qdrant-client==1.7.0
-weaviate-client==3.26.0
-pymilvus==2.3.4
-redis==5.0.1
-hiredis==2.3.2
-boto3==1.34.44
-azure-storage-blob==12.19.1
-
-# Retrieval
-rank-bm25==0.2.2
-
-# YouTube Processing (Phase 2)
-yt-dlp==2023.12.30
-moviepy==1.0.3
-pydub==0.25.1
-openai-whisper==20231117
-
-# Enhanced PDF Processing (Phase 2)
-pdfplumber==0.10.3
-pymupdf==1.23.8
-
-# Utilities
-pyyaml==6.0.1
-numpy==1.26.3
+httpx==0.27.0
+pydantic==2.8.0
+pydantic-settings==2.4.0
+psycopg2-binary==2.9.10
+sqlalchemy>=2.0.29,<3.0
+pgvector==0.3.2
+sentence-transformers==3.0.1
+groq==0.9.0
+python-dotenv==1.0.0
+structlog==24.4.0
+slowapi==0.1.9

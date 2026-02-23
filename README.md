@@ -1,438 +1,302 @@
-# 🎓 AI Study Assistant - Advanced RAG Platform
+# Enterprise LMS Platform — RBAC Implementation
 
-A production-grade educational platform featuring a modular Retrieval-Augmented Generation (RAG) system with multiple configurable strategies for chunking, embedding, vector storage, retrieval, and LLM providers.
-
-## 🌟 Features
-
-### Core Functionality
-- 📄 **PDF Document Processing** - Upload and index educational materials
-- 💬 **Intelligent Chat Interface** - Ask questions about your documents
-- 🔐 **User Authentication** - Secure JWT-based auth system
-- 🎯 **Multi-Provider Support** - OpenAI, Groq, and more
-
-### Advanced RAG Features
-- **8 Chunking Strategies**: Fixed-size, Overlap, Page-based, Paragraph, Semantic, Parent-child, Sentence, Recursive
-- **Multiple Embedding Models**: OpenAI, Sentence Transformers, Cohere, HuggingFace
-- **Vector Store Options**: PostgreSQL+pgvector, FAISS, ChromaDB, Qdrant, Pinecone
-- **Retrieval Strategies**: Semantic, BM25, Hybrid + optional reranking
-- **LLM Providers**: OpenAI (GPT-4o/GPT-4.1/GPT-5), Groq, Anthropic Claude 3.5, Gemini, Cohere
-- **Security Controls**: Tenant-aware auth context, role-based permission middleware, and audit logging
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                FRONTEND (React + TypeScript)             │
-│  • Auth UI                                               │
-│  • Document Upload with Strategy Selection               │
-│  • Chat Interface                                        │
-│  • Provider Configuration Dropdowns                      │
-└────────────────────┬────────────────────────────────────┘
-                     │ REST API
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│           BACKEND (Node.js + TypeScript)                 │
-│  • JWT Authentication                                    │
-│  • Document Management                                   │
-│  • Chat Session Handling                                 │
-│  • Configuration Pass-through                            │
-└────────────────────┬────────────────────────────────────┘
-                     │ HTTP
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│           AI SERVICE (Python + FastAPI)                  │
-│                                                           │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │          MODULAR RAG PIPELINE                      │  │
-│  │                                                     │  │
-│  │  1. CHUNKING (Factory Pattern)                     │  │
-│  │     ├─ Fixed Size      (500 words + overlap)      │  │
-│  │     ├─ Page Based      (PDF page boundaries)      │  │
-│  │     ├─ Paragraph       (Natural breaks)           │  │
-│  │     ├─ Semantic        (Topic boundaries)         │  │
-│  │     ├─ Parent-Child    (Hierarchical)             │  │
-│  │     ├─ Sentence        (Sentence groups)          │  │
-│  │     └─ Recursive       (Multi-level splits)       │  │
-│  │                                                     │  │
-│  │  2. EMBEDDING (Factory Pattern)                    │  │
-│  │     ├─ OpenAI          (text-embedding-3-small)   │  │
-│  │     ├─ SentenceTransformer / Cohere / HF          │  │
-│  │     └─ Groq fallback   (local normalized vector)  │  │
-│  │                                                     │  │
-│  │  3. VECTOR STORE                                   │  │
-│  │     ├─ PostgreSQL      (pgvector extension)       │  │
-│  │     ├─ FAISS / ChromaDB / Qdrant                  │  │
-│  │     └─ Pinecone                                   │  │
-│  │                                                     │  │
-│  │  4. RETRIEVAL                                      │  │
-│  │     ├─ Semantic        (vector similarity)        │  │
-│  │     ├─ BM25            (lexical)                  │  │
-│  │     └─ Hybrid + optional reranking                │  │
-│  │                                                     │  │
-│  │  5. LLM GENERATION                                 │  │
-│  │     ├─ OpenAI          (GPT-4o / GPT-4.1 / GPT-5)│  │
-│  │     ├─ Groq            (Llama 3.3 70B)            │  │
-│  │     └─ Claude 3.5 / Gemini / Cohere               │  │
-│  └───────────────────────────────────────────────────┘  │
-└────────────────────┬────────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│         DATABASE (PostgreSQL + pgvector)                 │
-│  • User accounts                                         │
-│  • Documents & chunks                                    │
-│  • Vector embeddings (1536-dim)                          │
-│  • Chat conversations & messages                         │
-└─────────────────────────────────────────────────────────┘
-```
-
-## 🚀 Quick Start
-
-### Prerequisites
-- Node.js 18+
-- Python 3.10+
-- PostgreSQL 14+ with pgvector extension
-- API Keys: OpenAI (optional) or Groq (free)
-
-### Installation
-
-**1. Clone and Setup Database**
-```bash
-git clone <your-repo-url>
-cd edu-platform
-
-# Create database
-createdb edu_platform
-psql edu_platform -f database/schema.sql
-```
-
-**2. Python AI Service**
-```bash
-cd ai-service
-python3.10 -m venv venv
-source venv/bin/activate  # Mac/Linux
-# venv\Scripts\activate  # Windows
-
-pip install -r requirements.txt
-
-# Configure environment
-cp .env.example .env
-# Edit .env and add your API keys
-```
-
-**3. Node.js Backend**
-```bash
-cd ../backend
-npm install
-
-# Configure environment
-cp .env.example .env
-# Edit .env and add your settings
-```
-
-**4. React Frontend**
-```bash
-cd ../frontend
-npm install
-
-# Configure environment
-cp .env.example .env
-```
-
-### Environment Files (where to add keys)
-- `backend/.env`: `DATABASE_URL`, `JWT_SECRET`, `PORT`, `AI_SERVICE_URL`
-- `ai-service/.env`: provider keys (`OPENAI_API_KEY`, `GROQ_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `COHERE_API_KEY`, `TOGETHER_API_KEY`) plus connector keys and `AI_SERVICE_PORT`
-- `frontend/.env`: `PORT`, `REACT_APP_API_URL`
-
-### Running the Application
-
-**Terminal 1 - Python AI Service:**
-```bash
-cd ai-service
-source venv/bin/activate
-python main.py
-# Running on http://localhost:${AI_SERVICE_PORT:-8000}
-```
-
-**Terminal 2 - Node.js Backend:**
-```bash
-cd backend
-npm run dev
-# Running on http://localhost:${PORT:-3000}
-```
-
-**Terminal 3 - React Frontend:**
-```bash
-cd frontend
-npm start
-# Running on http://localhost:${PORT:-3001}
-```
-Visit your configured frontend URL (default **http://localhost:3001**) in your browser.
-
-## 📚 Usage Guide
-
-### Basic Workflow
-1. **Sign Up** - Create an account
-2. **Select AI Provider** - Choose OpenAI or Groq from dropdown
-3. **Upload Documents** - Upload PDF files
-4. **Choose Chunking Strategy** - Select how to split your documents
-5. **Start Chatting** - Ask questions about your materials
-
-### Chunking Strategies Explained
-
-| Strategy | Best For | Description |
-|----------|----------|-------------|
-| **Fixed Size** | General documents | 500 words with 50-word overlap |
-| **Page Based** | Structured PDFs | Preserves page boundaries |
-| **Paragraph** | Articles, books | Keeps paragraphs intact |
-| **Semantic** | Technical docs | Splits by topic/headers |
-| **Parent-Child** | Context retention | Hierarchical chunks |
-| **Sentence** | Precise retrieval | Groups sentences |
-| **Recursive** | Complex docs | Multi-level splitting |
-
-### API Endpoints
-
-#### Authentication
-- `POST /auth/signup` - Create account
-- `POST /auth/login` - Login
-
-#### Documents
-- `GET /documents` - List documents
-- `POST /documents/upload` - Upload PDF (with strategy selection)
-- `DELETE /documents/:id` - Delete document
-
-#### Chat
-- `GET /conversations` - List conversations
-- `POST /conversations` - Create conversation
-- `POST /chat/send` - Send message
-
-#### Configuration
-- `GET /ai/chunking-strategies` - List available strategies
-- `GET /ai/providers` - List available AI providers
-
-#### Connectors
-- `GET /connectors` - Connector configuration status
-- `POST /connectors/ingest` - Pull and ingest external content (Google Drive, S3, Azure Blob, Salesforce, LMS)
-
-Example payload:
-```json
-{
-  "connector": "s3",
-  "resource": "s3://my-bucket/path/to/doc.txt",
-  "provider": "openai",
-  "model": "gpt-4o-mini",
-  "embedding_model": "openai",
-  "chunking_strategy": "overlap",
-  "chunking_params": { "chunk_size": 500, "overlap": 80 }
-}
-```
-
-## 🛠️ Tech Stack
-
-### Backend Services
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| Backend API | Node.js + TypeScript + Express | REST API server |
-| AI Service | Python + FastAPI | RAG pipeline |
-| Database | PostgreSQL 14 | Data persistence |
-| Vector Store | pgvector extension | Vector similarity search |
-
-### AI/ML Stack
-| Component | Options | Notes |
-|-----------|---------|-------|
-| **Chunking** | 7 strategies | Factory pattern |
-| **Embeddings** | OpenAI, Simple Text | Extensible |
-| **Vector DB** | pgvector | IVFFlat indexing |
-| **Retrieval** | Semantic, BM25, Hybrid, Rerank toggle | Configurable in UI |
-| **LLM** | OpenAI GPT, Groq Llama | Multi-provider |
-
-### Frontend
-| Component | Technology |
-|-----------|-----------|
-| Framework | React 18 + TypeScript |
-| HTTP Client | Axios |
-| Styling | Custom CSS |
-| State | React Hooks |
-
-## 📁 Project Structure
-
-```
-edu-platform/
-├── ai-service/              # Python AI microservice
-│   ├── chunking/           # Modular chunking strategies
-│   │   ├── base_chunker.py
-│   │   ├── fixed_size_chunker.py
-│   │   ├── page_based_chunker.py
-│   │   ├── paragraph_chunker.py
-│   │   ├── semantic_chunker.py
-│   │   ├── parent_child_chunker.py
-│   │   ├── sentence_chunker.py
-│   │   ├── recursive_chunker.py
-│   │   └── chunking_factory.py
-│   ├── main.py             # FastAPI application
-│   ├── requirements.txt    # Python dependencies
-│   └── .env.example        # Environment template
-│
-├── backend/                # Node.js backend
-│   ├── src/
-│   │   └── server.ts       # Express application
-│   ├── package.json        # Node dependencies
-│   ├── tsconfig.json       # TypeScript config
-│   └── .env.example        # Environment template
-│
-├── frontend/               # React frontend
-│   ├── src/
-│   │   ├── App.tsx         # Main application
-│   │   └── App.css         # Styles
-│   ├── package.json        # Dependencies
-│   └── .env.example        # Environment template
-│
-├── database/               # Database schema
-│   └── schema.sql          # PostgreSQL schema
-│
-└── README.md              # This file
-```
-
-## 🔧 Configuration
-
-### Environment Variables
-Create env files first:
-```bash
-cp ai-service/.env.example ai-service/.env
-cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env
-```
-
-Where to add API keys:
-- Add LLM keys in `ai-service/.env`
-- Add backend secrets/DB in `backend/.env`
-- Add frontend API URL and frontend dev port in `frontend/.env`
-
-Templates:
-
-**`ai-service/.env`**
-```env
-AI_SERVICE_HOST=0.0.0.0
-AI_SERVICE_PORT=8000
-
-FRONTEND_PORT=3001
-FRONTEND_URL=http://localhost:3001
-# CORS_ORIGINS=http://localhost:3001,http://127.0.0.1:3001
-
-DATABASE_URL=postgresql://localhost:5432/edu_platform
-
-OPENAI_API_KEY=sk-...
-GROQ_API_KEY=gsk_...
-COHERE_API_KEY=...
-ANTHROPIC_API_KEY=...
-GOOGLE_API_KEY=...
-TOGETHER_API_KEY=...
-```
-
-**`backend/.env`**
-```env
-PORT=3000
-DATABASE_URL=postgresql://localhost:5432/edu_platform
-JWT_SECRET=replace-with-a-strong-secret
-
-# Use either AI_SERVICE_URL or AI_SERVICE_HOST + AI_SERVICE_PORT
-AI_SERVICE_URL=http://localhost:8000
-# AI_SERVICE_HOST=localhost
-# AI_SERVICE_PORT=8000
-```
-
-**`frontend/.env`**
-```env
-PORT=3001
-REACT_APP_API_URL=http://localhost:3000
-# Optional fallback used when REACT_APP_API_URL is not set
-REACT_APP_BACKEND_PORT=3000
-```
-
-Port configuration:
-- Frontend dev server port: `frontend/.env` -> `PORT`
-- Backend API port: `backend/.env` -> `PORT`
-- AI service port: `ai-service/.env` -> `AI_SERVICE_PORT` (or `PORT`)
-
-If you change ports:
-1. Set `backend/.env` `PORT=<backend_port>`
-2. Set `ai-service/.env` `AI_SERVICE_PORT=<ai_port>`
-3. Set `frontend/.env` `PORT=<frontend_port>`
-4. Point frontend to backend with `REACT_APP_API_URL=http://localhost:<backend_port>`
-5. Point backend to AI with `AI_SERVICE_URL=http://localhost:<ai_port>` (or host+port vars)
-
-## 🧪 Testing
-
-**Test Chunking Module:**
-```bash
-cd ai-service
-python test_chunking.py
-```
-
-**Test API Endpoints:**
-```bash
-# Test AI service
-curl http://localhost:8000/
-
-# Test backend
-curl http://localhost:3000/
-
-# List chunking strategies
-curl http://localhost:8000/ai/chunking-strategies
-```
-
-## 🎯 Roadmap
-
-### Phase 2: Rich Ingestion (Coming Soon)
-- ✅ YouTube video ingestion
-- ✅ Research paper handling
-- ✅ Metadata tagging (subject/year)
-- ✅ Advanced filtering
-
-### Phase 3: AI Learning Tools (Coming Soon)
-- ✅ Quiz generation
-- ✅ AI-powered grading
-- ✅ Study recommendations
-
-### Phase 4: Enterprise Features (Coming Soon)
-- ✅ LMS integration (LTI)
-- ✅ Multi-tenant support
-- ✅ Admin portal
-- ✅ Analytics dashboard
-
-### Phase 5: Advanced RAG (In Progress)
-- ⏳ More embedding models
-- ⏳ Multiple vector stores
-- ⏳ Hybrid retrieval
-- ⏳ More LLM providers
-
-## 🤝 Contributing
-
-This is a learning project. Feel free to:
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
-
-## 📄 License
-
-MIT License - See LICENSE file for details
-
-## 👨‍💻 Author
-
-Built as an educational project to demonstrate:
-- Modern full-stack architecture
-- Advanced RAG techniques
-- Modular design patterns
-- Production-ready code
-
-## 🙏 Acknowledgments
-
-- OpenAI for GPT and embeddings API
-- Groq for fast LLM inference
-- PostgreSQL team for pgvector extension
-- FastAPI and React communities
+Full-stack, multi-tenant Learning Management System with role-based access control, three separate portals, and AI-powered tutoring.
 
 ---
 
-**Questions?** Open an issue or reach out!
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Frontend (React)                      │
+│  ┌──────────────┐  ┌──────────────────┐  ┌──────────────┐  │
+│  │  Super Admin │  │  University Admin│  │ User Portal  │  │
+│  │   Portal     │  │     Portal       │  │ (Faculty /   │  │
+│  │ /super-admin │  │ /university-admin│  │  Student)    │  │
+│  └──────────────┘  └──────────────────┘  └──────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+         │                     │                    │
+         └─────────────────────▼────────────────────┘
+                        Backend (Node.js / Express)
+                        ┌──────────────────────────┐
+                        │  JWT Auth + RBAC Middleware│
+                        │  Tenant Isolation Layer   │
+                        │  Rate Limiting & Audit Log│
+                        └──────────────┬───────────┘
+                                       │
+               ┌───────────────────────┴───────────────────────┐
+               │                                               │
+    ┌──────────▼──────────┐                        ┌──────────▼──────────┐
+    │ PostgreSQL + pgvector│                        │  AI Service (FastAPI)│
+    │  Users, Tenants,     │                        │  Chat, Embeddings,  │
+    │  Documents, Chunks   │                        │  Quiz Gen, Ingestion│
+    └──────────────────────┘                        └──────────────────────┘
+```
+
+---
+
+## Roles & Permissions
+
+| Role             | Scope      | Key Permissions                                        |
+| ---------------- | ---------- | ------------------------------------------------------ |
+| `SUPER_ADMIN`    | Global     | All permissions including impersonation, tenant CRUD   |
+| `INTERNAL_ADMIN` | Global     | Read all tenants, users, analytics, audit logs         |
+| `INTERNAL_STAFF` | Global     | Read platform dashboard and tenant overview            |
+| `TENANT_ADMIN`   | Per-tenant | Full management of their university                    |
+| `FACULTY`        | Per-tenant | Course/content management, student analytics           |
+| `STUDENT`        | Per-tenant | Read courses, documents, use AI chat, take assessments |
+
+### 28 Granular Permissions
+
+**Global scope:** `GLOBAL_DASHBOARD_READ`, `TENANT_CREATE`, `TENANT_READ`, `TENANT_UPDATE`, `TENANT_DELETE`, `INTERNAL_USER_READ`, `INTERNAL_USER_WRITE`, `IMPERSONATE_TENANT_ADMIN`, `AUDIT_LOG_READ`, `GLOBAL_ANALYTICS_READ`
+
+**Tenant scope:** `TENANT_USER_READ`, `TENANT_USER_WRITE`, `COURSE_READ`, `COURSE_WRITE`, `KB_READ`, `KB_WRITE`, `CONNECTOR_CONFIGURE`, `AI_SETTINGS_UPDATE`, `TENANT_ANALYTICS_READ`, `DOCUMENT_READ`, `DOCUMENT_WRITE`, `DOCUMENT_DELETE`, `VIDEO_READ`, `VIDEO_WRITE`, `ASSESSMENT_READ`, `ASSESSMENT_WRITE`, `CHAT_USE`, `STUDENT_PROGRESS_READ`
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Node.js 20+
+- Python 3.11+
+- Docker & Docker Compose (recommended)
+- PostgreSQL 16 with pgvector (included in Docker setup)
+
+### Option A: Docker Compose (Recommended)
+
+```bash
+# Clone/extract the project
+cd lms-rbac
+
+# Start all services
+docker-compose up -d
+
+# Wait ~30 seconds for DB initialization, then open:
+open http://localhost:3000
+```
+
+### Option B: Manual Setup
+
+#### 1. Database
+
+```bash
+# Start PostgreSQL with pgvector
+docker run -d \
+  --name lms-postgres \
+  -e POSTGRES_USER=lms_user \
+  -e POSTGRES_PASSWORD=lms_pass \
+  -e POSTGRES_DB=lms_db \
+  -p 5432:5432 \
+  pgvector/pgvector:pg16
+
+# Run schema
+psql postgresql://lms_user:lms_pass@localhost:5432/lms_db < database/schema.sql
+```
+
+#### 2. Backend
+
+```bash
+cd backend
+cp .env.example .env
+# Edit .env with your values
+
+npm install
+npm run dev
+# Runs on http://localhost:3001
+```
+
+#### 3. AI Service
+
+```bash
+cd ai-service
+cp .env.example .env
+# Edit .env — JWT_SECRET must match backend's JWT_SECRET
+
+python -m venv venv
+source venv/bin/activate   # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
+# Runs on http://localhost:8000
+```
+
+#### 4. Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+# Runs on http://localhost:3000
+```
+
+---
+
+## Demo Accounts
+
+All passwords: **Admin@12345**
+
+| Role             | Email                     | Portal            |
+| ---------------- | ------------------------- | ----------------- |
+| Super Admin      | superadmin@platform.local | /super-admin      |
+| University Admin | admin@state.edu           | /university-admin |
+| Faculty          | faculty@state.edu         | /portal           |
+| Student          | student@state.edu         | /portal           |
+
+---
+
+## Security Features Implemented
+
+### Authentication & Token Handling
+
+- Short-lived access tokens (8h) + rotating refresh tokens (7d, httpOnly cookie)
+- JWT validated with issuer/audience claims + expiry enforcement
+- Refresh token rotation with automatic access token renewal
+- Token revocation via `jti` tracking in logout flow
+
+### RBAC & Tenant Isolation
+
+- Role-permission matrix enforced at API middleware layer (not just UI)
+- Tenant ID extracted from trusted JWT claim only — never user-provided body field
+- Object-level authorization: every resource access verified against requesting user's tenant
+- IDOR prevention: all IDs validated against tenant scope before response
+
+### Impersonation (Super Admin Only)
+
+- Time-limited impersonation sessions (default 60 min, configurable)
+- Full audit trail: impersonator, target, reason, timestamps
+- Impersonation token explicitly marked in claims (`isImpersonating: true`)
+- One-click session termination
+
+### Input Validation & Injection Prevention
+
+- Request schema validation via `express-validator` on all routes
+- Parameterized queries only (no raw string interpolation in SQL)
+- File upload restrictions: allowlist of extensions + MIME check + size limit (50MB default)
+- YouTube URL validation before ingestion
+
+### Rate Limiting
+
+- Global: 300 req/15min
+- Auth endpoints: 5 attempts/15min (login brute-force protection)
+- AI chat: 30/min per user
+- Document ingest: 10/min
+
+### Security Headers
+
+- `helmet()` sets: CSP, HSTS, X-Frame-Options DENY, X-Content-Type-Options nosniff, Referrer-Policy
+- CORS: allowlist-only, credentials mode
+
+### Logging & Auditing
+
+- Structured JSON logs via `winston` (backend) and `structlog` (AI service)
+- Correlation IDs on every request (`X-Correlation-ID`)
+- Security events logged: failed auth, permission denials, impersonation, user CRUD
+- Audit log table with tenant scope, user, action, resource, IP, user-agent
+
+### Secrets Management
+
+- All secrets in environment variables (never hardcoded)
+- `.env.example` provided, `.env` in `.gitignore`
+- Internal service-to-service auth via shared secret (`X-Internal-Secret` header)
+
+---
+
+## API Reference
+
+### Auth
+
+| Method | Path                | Description                 |
+| ------ | ------------------- | --------------------------- |
+| POST   | `/api/auth/login`   | Login, returns access token |
+| POST   | `/api/auth/logout`  | Invalidate refresh token    |
+| POST   | `/api/auth/refresh` | Refresh access token        |
+| GET    | `/api/auth/me`      | Current user profile        |
+
+### Super Admin
+
+| Method | Path                               | Permission                 |
+| ------ | ---------------------------------- | -------------------------- |
+| GET    | `/api/super-admin/dashboard`       | `GLOBAL_DASHBOARD_READ`    |
+| GET    | `/api/super-admin/tenants`         | `TENANT_READ`              |
+| POST   | `/api/super-admin/tenants`         | `TENANT_CREATE`            |
+| PUT    | `/api/super-admin/tenants/:id`     | `TENANT_UPDATE`            |
+| DELETE | `/api/super-admin/tenants/:id`     | `TENANT_DELETE`            |
+| GET    | `/api/super-admin/internal-users`  | `INTERNAL_USER_READ`       |
+| POST   | `/api/super-admin/internal-users`  | `INTERNAL_USER_WRITE`      |
+| POST   | `/api/super-admin/impersonate`     | `IMPERSONATE_TENANT_ADMIN` |
+| POST   | `/api/super-admin/impersonate/end` | Auth required              |
+| GET    | `/api/super-admin/audit-logs`      | `AUDIT_LOG_READ`           |
+| GET    | `/api/super-admin/analytics`       | `GLOBAL_ANALYTICS_READ`    |
+
+### University Admin
+
+| Method | Path                             | Permission            |
+| ------ | -------------------------------- | --------------------- |
+| GET    | `/api/tenant-admin/dashboard`    | `TENANT_USER_READ`    |
+| GET    | `/api/tenant-admin/users`        | `TENANT_USER_READ`    |
+| POST   | `/api/tenant-admin/users/invite` | `TENANT_USER_WRITE`   |
+| PUT    | `/api/tenant-admin/users/:id`    | `TENANT_USER_WRITE`   |
+| DELETE | `/api/tenant-admin/users/:id`    | `TENANT_USER_WRITE`   |
+| GET    | `/api/tenant-admin/courses`      | `COURSE_READ`         |
+| POST   | `/api/tenant-admin/courses`      | `COURSE_WRITE`        |
+| PUT    | `/api/tenant-admin/ai-settings`  | `AI_SETTINGS_UPDATE`  |
+| PUT    | `/api/tenant-admin/connectors`   | `CONNECTOR_CONFIGURE` |
+
+### User Portal
+
+| Method | Path                                 | Permission                        |
+| ------ | ------------------------------------ | --------------------------------- |
+| GET    | `/api/portal/courses`                | `COURSE_READ`                     |
+| POST   | `/api/portal/chat`                   | `CHAT_USE`                        |
+| GET    | `/api/portal/assessments`            | `ASSESSMENT_READ`                 |
+| POST   | `/api/portal/assessments/:id/submit` | `ASSESSMENT_READ`                 |
+| POST   | `/api/portal/assessments`            | `ASSESSMENT_WRITE` (Faculty)      |
+| GET    | `/api/portal/student-progress`       | `STUDENT_PROGRESS_READ` (Faculty) |
+
+---
+
+## File Structure
+
+```
+lms-rbac/
+├── database/
+│   └── schema.sql              # Full PostgreSQL schema with seed data
+├── backend/
+│   ├── src/
+│   │   └── server.ts           # Express server: auth, RBAC, all routes
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── Dockerfile
+│   └── .env.example
+├── ai-service/
+│   ├── main.py                 # FastAPI with full auth middleware
+│   ├── middleware/
+│   │   └── auth.py             # JWT validation, RBAC, tenant scope
+│   ├── requirements.txt
+│   ├── Dockerfile
+│   └── .env.example
+├── frontend/
+│   ├── src/
+│   │   ├── App.tsx             # Router: 3 portals + login
+│   │   ├── main.tsx
+│   │   ├── hooks/
+│   │   │   └── useAuth.ts      # Auth context with JWT refresh
+│   │   ├── utils/
+│   │   │   └── api.ts          # Typed API clients for all portals
+│   │   ├── components/
+│   │   │   ├── auth/
+│   │   │   │   └── Login.tsx   # Shared login page
+│   │   │   └── shared/
+│   │   │       ├── UI.tsx      # Reusable components library
+│   │   │       └── SidebarLayout.tsx
+│   │   └── portals/
+│   │       ├── SuperAdminPortal.tsx
+│   │       ├── UniversityAdminPortal.tsx
+│   │       └── UserPortal.tsx
+│   ├── package.json
+│   ├── vite.config.ts
+│   ├── Dockerfile
+│   └── nginx.conf
+├── docker-compose.yml
+└── README.md
+```

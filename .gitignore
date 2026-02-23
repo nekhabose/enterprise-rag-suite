@@ -1,35 +1,12 @@
-# env and secrets
-.env
-.env.*
-!.env.example
-!**/.env.example
-*.key
-*.pem
-*.p12
-gcp-key.json
-*credentials*
-secrets*
-
-# Node
 node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Python
+dist/
+.env
+*.env.local
+uploads/
 __pycache__/
 *.pyc
 .venv/
 venv/
-.envrc
-
-# build outputs
-dist/
-build/
-backend/uploads/
-*.backup
-
-# OS / IDE
+*.egg-info/
 .DS_Store
-.vscode/
-.idea/
+*.log

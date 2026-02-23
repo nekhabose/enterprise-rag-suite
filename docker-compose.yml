@@ -1,0 +1,75 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: lms_postgres
+    environment:
+      POSTGRES_USER: lms_user
+      POSTGRES_PASSWORD: lms_pass
+      POSTGRES_DB: lms_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lms_user -d lms_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lms_backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://lms_user:lms_pass@postgres:5432/lms_db
+      JWT_SECRET: dev-secret-key-minimum-32-chars-long-change-in-prod
+      REFRESH_SECRET: dev-refresh-secret-32-chars-minimum-change-in-prod
+      AI_SERVICE_URL: http://ai-service:8000
+      AI_SERVICE_SECRET: internal-service-secret-key
+      ALLOWED_ORIGINS: http://localhost:3000
+      NODE_ENV: development
+      PORT: 3001
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./uploads:/app/uploads
+
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    container_name: lms_ai_service
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://lms_user:lms_pass@postgres:5432/lms_db
+      JWT_SECRET: dev-secret-key-minimum-32-chars-long-change-in-prod
+      AI_SERVICE_SECRET: internal-service-secret-key
+      ALLOWED_ORIGINS: http://localhost:3000,http://localhost:3001
+      AI_SERVICE_PORT: 8000
+      NODE_ENV: development
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://localhost:3001
+    container_name: lms_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
