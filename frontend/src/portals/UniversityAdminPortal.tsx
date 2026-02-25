@@ -26,7 +26,7 @@ const NAV_ITEMS = [
 function Dashboard() {
   const [stats, setStats] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(true);
-  const { user } = useAuth();
+  useAuth();
 
   useEffect(() => {
     tenantAdminApi.getDashboard()
@@ -36,16 +36,28 @@ function Dashboard() {
   }, []);
 
   if (loading) return <div style={{ display: 'flex', justifyContent: 'center', padding: '60px' }}><Spinner /></div>;
-  const s = stats as Record<string, number>;
+  const s = stats ?? {};
+  const asNumber = (value: unknown): number => {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string') return Number(value) || 0;
+    if (Array.isArray(value)) {
+      // `/tenant-admin/dashboard` returns users grouped by role.
+      return value.reduce((sum, row) => sum + (Number((row as { total?: unknown })?.total) || 0), 0);
+    }
+    if (value && typeof value === 'object' && 'total' in (value as Record<string, unknown>)) {
+      return Number((value as { total?: unknown }).total) || 0;
+    }
+    return 0;
+  };
 
   return (
     <div>
       <PageHeader title={`Welcome back`} subtitle="University Admin Dashboard" />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', marginBottom: '32px' }}>
-        <StatCard label="Total Users" value={s.users ?? 0} icon="👥" />
-        <StatCard label="Courses" value={s.courses ?? 0} icon="📚" />
-        <StatCard label="Documents" value={s.documents ?? 0} icon="📄" />
-        <StatCard label="Active Chats" value={s.activeChats ?? 0} icon="💬" />
+        <StatCard label="Total Users" value={asNumber(s.users)} icon="👥" />
+        <StatCard label="Courses" value={asNumber(s.courses)} icon="📚" />
+        <StatCard label="Documents" value={asNumber(s.documents)} icon="📄" />
+        <StatCard label="Active Chats" value={asNumber(s.conversations ?? s.activeChats)} icon="💬" />
       </div>
     </div>
   );
