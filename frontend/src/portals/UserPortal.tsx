@@ -702,8 +702,9 @@ export default function UserPortal() {
   if (!user || ['SUPER_ADMIN', 'INTERNAL_ADMIN', 'INTERNAL_STAFF', 'TENANT_ADMIN'].includes(user.role)) {
     return <Navigate to="/login" replace />;
   }
+  if (user.role === 'STUDENT') return <Navigate to="/student/dashboard" replace />;
 
-  const navItems = user.role === 'FACULTY' ? NAV_ITEMS_FACULTY : NAV_ITEMS_STUDENT;
+  const navItems = NAV_ITEMS_FACULTY;
   const accentColor = user.role === 'FACULTY' ? 'var(--brand-600)' : 'var(--brand-500)';
 
   return (

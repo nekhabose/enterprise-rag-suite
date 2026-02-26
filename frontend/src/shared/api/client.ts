@@ -130,3 +130,20 @@ export const userApi = {
   getStudentProgress: (courseId?: number) => api.get('/portal/student-progress', { params: { courseId } }),
   createAssessment: (data: Record<string, unknown>) => api.post('/assessments/create', data),
 };
+
+export const studentApi = {
+  getDashboard: () => api.get('/student/dashboard'),
+  getCourses: () => api.get('/student/courses'),
+  getCalendar: (params?: Record<string, unknown>) => api.get('/student/calendar', { params }),
+  getInbox: (params?: Record<string, unknown>) => api.get('/student/inbox', { params }),
+  getHistory: () => api.get('/student/history'),
+  getAccount: () => api.get('/student/account'),
+  getCourseHome: (courseId: number) => api.get(`/student/courses/${courseId}/home`),
+  getCourseModules: (courseId: number) => api.get(`/student/courses/${courseId}/modules`),
+  setCourseItemCompletion: (courseId: number, module_item_id: number, completed: boolean, item_key?: string) =>
+    api.post(`/student/courses/${courseId}/modules/complete`, { module_item_id, completed, item_key }),
+  getCourseQuizzes: (courseId: number, params?: Record<string, unknown>) =>
+    api.get(`/student/courses/${courseId}/quizzes`, { params }),
+  getCourseFiles: (courseId: number, params?: Record<string, unknown>) =>
+    api.get(`/student/courses/${courseId}/files`, { params }),
+};

@@ -244,6 +244,50 @@ CREATE TABLE IF NOT EXISTS course_enrollments (
     UNIQUE(course_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS course_modules (
+    id SERIAL PRIMARY KEY,
+    course_id INT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    position INT DEFAULT 0,
+    is_published BOOLEAN DEFAULT true,
+    created_by INT REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS course_module_items (
+    id SERIAL PRIMARY KEY,
+    module_id INT NOT NULL REFERENCES course_modules(id) ON DELETE CASCADE,
+    item_type VARCHAR(20) NOT NULL CHECK (item_type IN ('DOCUMENT','QUIZ','ASSIGNMENT','LINK','VIDEO')),
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    position INT DEFAULT 0,
+    document_id INT REFERENCES documents(id) ON DELETE SET NULL,
+    quiz_id INT REFERENCES assessments(id) ON DELETE SET NULL,
+    video_id INT REFERENCES videos(id) ON DELETE SET NULL,
+    link_url TEXT,
+    due_at TIMESTAMP,
+    is_published BOOLEAN DEFAULT true,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS student_module_item_progress (
+    id SERIAL PRIMARY KEY,
+    module_item_id INT NOT NULL REFERENCES course_module_items(id) ON DELETE CASCADE,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status VARCHAR(20) NOT NULL DEFAULT 'NOT_STARTED' CHECK (status IN ('NOT_STARTED','IN_PROGRESS','COMPLETED')),
+    completed_at TIMESTAMP,
+    last_viewed_at TIMESTAMP,
+    score DECIMAL(5,2),
+    feedback TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(module_item_id, user_id)
+);
+
 -- ============================================================
 -- CONVERSATIONS / MESSAGES
 -- ============================================================
@@ -386,6 +430,50 @@ CREATE TABLE IF NOT EXISTS tenant_ai_policies (
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS course_modules (
+    id SERIAL PRIMARY KEY,
+    course_id INT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    position INT DEFAULT 0,
+    is_published BOOLEAN DEFAULT true,
+    created_by INT REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS course_module_items (
+    id SERIAL PRIMARY KEY,
+    module_id INT NOT NULL REFERENCES course_modules(id) ON DELETE CASCADE,
+    item_type VARCHAR(20) NOT NULL CHECK (item_type IN ('DOCUMENT','QUIZ','ASSIGNMENT','LINK','VIDEO')),
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    position INT DEFAULT 0,
+    document_id INT REFERENCES documents(id) ON DELETE SET NULL,
+    quiz_id INT REFERENCES assessments(id) ON DELETE SET NULL,
+    video_id INT REFERENCES videos(id) ON DELETE SET NULL,
+    link_url TEXT,
+    due_at TIMESTAMP,
+    is_published BOOLEAN DEFAULT true,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS student_module_item_progress (
+    id SERIAL PRIMARY KEY,
+    module_item_id INT NOT NULL REFERENCES course_module_items(id) ON DELETE CASCADE,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status VARCHAR(20) NOT NULL DEFAULT 'NOT_STARTED' CHECK (status IN ('NOT_STARTED','IN_PROGRESS','COMPLETED')),
+    completed_at TIMESTAMP,
+    last_viewed_at TIMESTAMP,
+    score DECIMAL(5,2),
+    feedback TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(module_item_id, user_id)
+);
+
 -- ============================================================
 -- COMPATIBILITY MIGRATIONS (idempotent)
 -- ============================================================
@@ -431,6 +519,9 @@ CREATE INDEX IF NOT EXISTS idx_assessments_tenant ON assessments(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant ON audit_logs(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_courses_tenant ON courses(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_course_modules_course ON course_modules(course_id, position);
+CREATE INDEX IF NOT EXISTS idx_course_module_items_module ON course_module_items(module_id, position);
+CREATE INDEX IF NOT EXISTS idx_student_module_progress_user ON student_module_item_progress(user_id);
 CREATE INDEX IF NOT EXISTS idx_invitations_token ON invitations(token);
 
 -- ============================================================

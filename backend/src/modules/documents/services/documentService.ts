@@ -152,12 +152,19 @@ export function createDocumentService(deps: LegacyRouteDeps) {
       const docId = parseInt(req.params.id);
       const tenantId = req.tenantId!;
       const userId = req.userId!;
+      const userRole = req.userRole;
 
       try {
-        const result = await repo.query(
-          'SELECT filename, file_path FROM documents WHERE id = $1 AND tenant_id = $2',
-          [docId, tenantId],
-        );
+        const params: unknown[] = [docId, tenantId];
+        let q = 'SELECT filename, file_path, course_id, user_id FROM documents WHERE id = $1 AND tenant_id = $2';
+        if (userRole === ROLES.STUDENT) {
+          params.push(userId);
+          q += ` AND (user_id = $3 OR course_id IN (SELECT course_id FROM course_enrollments WHERE user_id = $3))`;
+        } else if (userRole === ROLES.FACULTY) {
+          params.push(userId);
+          q += ` AND (user_id = $3 OR course_id IN (SELECT id FROM courses WHERE faculty_id = $3 AND tenant_id = $2))`;
+        }
+        const result = await repo.query(q, params);
         if (!result.rows.length) return res.status(404).json({ error: 'Document not found' });
 
         const { filename, file_path } = result.rows[0];

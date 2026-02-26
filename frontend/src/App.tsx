@@ -7,6 +7,7 @@ import Login from './components/auth/Login';
 import SuperAdminPortal from './portals/SuperAdminPortal';
 import UniversityAdminPortal from './portals/UniversityAdminPortal';
 import UserPortal from './portals/UserPortal';
+import StudentPortal from './portals/StudentPortal';
 import { MotionReveal } from './shared/ui/motion';
 
 function RootRedirect() {
@@ -29,6 +30,7 @@ function RootRedirect() {
   if (!user) return <Navigate to="/login" replace />;
   if (['SUPER_ADMIN', 'INTERNAL_ADMIN', 'INTERNAL_STAFF'].includes(user.role)) return <Navigate to="/super-admin" replace />;
   if (user.role === 'TENANT_ADMIN') return <Navigate to="/university-admin" replace />;
+  if (user.role === 'STUDENT') return <Navigate to="/student/dashboard" replace />;
   return <Navigate to="/portal" replace />;
 }
 
@@ -56,6 +58,7 @@ export default function App() {
           <Route path="/super-admin/*" element={<RequireAuth><MotionReveal><SuperAdminPortal /></MotionReveal></RequireAuth>} />
           <Route path="/university-admin/*" element={<RequireAuth><MotionReveal><UniversityAdminPortal /></MotionReveal></RequireAuth>} />
           <Route path="/portal/*" element={<RequireAuth><MotionReveal><UserPortal /></MotionReveal></RequireAuth>} />
+          <Route path="/student/*" element={<RequireAuth><MotionReveal><StudentPortal /></MotionReveal></RequireAuth>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
