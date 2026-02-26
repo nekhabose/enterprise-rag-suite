@@ -23,6 +23,9 @@ export function createVideoService(deps: LegacyRouteDeps) {
         if (userRole === ROLES.STUDENT) {
           q += ` AND (v.user_id = $2 OR v.course_id IN (SELECT course_id FROM course_enrollments WHERE user_id = $2))`;
           params.push(userId);
+        } else if (userRole === ROLES.FACULTY) {
+          q += ` AND (v.user_id = $2 OR v.course_id IN (SELECT id FROM courses WHERE faculty_id = $2 AND tenant_id = $1))`;
+          params.push(userId);
         }
 
         q += ' ORDER BY v.created_at DESC';
@@ -48,10 +51,24 @@ export function createVideoService(deps: LegacyRouteDeps) {
       }
 
       try {
+        const normalizedCourseId = course_id ? Number(course_id) : null;
+        if (req.userRole === ROLES.FACULTY) {
+          if (!normalizedCourseId || !Number.isFinite(normalizedCourseId)) {
+            return res.status(400).json({ error: 'Faculty video upload requires a valid course_id' });
+          }
+          const assigned = await repo.query(
+            'SELECT id FROM courses WHERE id = $1 AND tenant_id = $2 AND faculty_id = $3',
+            [normalizedCourseId, tenantId, userId],
+          );
+          if (!assigned.rows.length) {
+            return res.status(403).json({ error: 'Faculty can upload videos only to assigned courses' });
+          }
+        }
+
         const result = await repo.query(
           `INSERT INTO videos (user_id, tenant_id, youtube_url, title, subject, year, course_id)
            VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-          [userId, tenantId, youtube_url, title ?? 'Untitled Video', subject ?? null, year ?? null, course_id ?? null],
+          [userId, tenantId, youtube_url, title ?? 'Untitled Video', subject ?? null, year ?? null, normalizedCourseId],
         );
 
         const videoId = result.rows[0].id;

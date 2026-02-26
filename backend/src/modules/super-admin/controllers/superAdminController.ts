@@ -9,6 +9,29 @@ export function registerSuperAdminController(deps: LegacyRouteDeps) {
   } = deps;
   type AuthRequest = import('../../../middleware/types').AuthRequest;
   type Response = import('express').Response;
+  const ALLOWED_VALUES = {
+    chunking: ['semantic', 'fixed', 'paragraph'],
+    embedding: ['minilm', 'openai', 'cohere'],
+    llm: ['groq', 'openai', 'anthropic', 'ollama'],
+    retrieval: ['hybrid', 'semantic', 'keyword'],
+    vector: ['postgres', 'pinecone', 'chroma'],
+  } as const;
+  const normalizeList = (value: unknown, fallback: readonly string[]) => {
+    if (!Array.isArray(value)) return [...fallback];
+    const set = new Set(
+      value
+        .map((v) => String(v).trim())
+        .filter((v) => fallback.includes(v as any)),
+    );
+    return set.size ? Array.from(set) : [...fallback];
+  };
+  const requireSuperAdmin = (req: AuthRequest, res: Response): boolean => {
+    if (req.userRole !== ROLES.SUPER_ADMIN) {
+      res.status(403).json({ error: 'Only Super Admin can manage AI governance' });
+      return false;
+    }
+    return true;
+  };
 
   app.get('/super-admin/dashboard', authMiddleware, requirePermission('PLATFORM_READ'), async (_req: AuthRequest, res: Response) => {
     try {
@@ -146,6 +169,137 @@ export function registerSuperAdminController(deps: LegacyRouteDeps) {
       res.json({ tenant: result.rows[0] });
     } catch {
       res.status(500).json({ error: 'Failed to toggle tenant' });
+    }
+  });
+
+  app.get('/super-admin/ai-governance', authMiddleware, requirePermission('TENANT_READ'), async (_req: AuthRequest, res: Response) => {
+    if (!requireSuperAdmin(_req, res)) return;
+    try {
+      const result = await pool.query(
+        `SELECT t.id, t.name, t.domain, t.is_active,
+                p.allowed_chunking_strategies, p.allowed_embedding_models, p.allowed_llm_providers,
+                p.allowed_retrieval_strategies, p.allowed_vector_stores, p.updated_at as policy_updated_at,
+                s.chunking_strategy, s.embedding_model, s.llm_provider, s.retrieval_strategy, s.vector_store
+         FROM tenants t
+         LEFT JOIN tenant_ai_policies p ON p.tenant_id = t.id
+         LEFT JOIN tenant_ai_settings s ON s.tenant_id = t.id
+         ORDER BY t.created_at DESC`,
+      );
+      return res.json({
+        options_catalog: ALLOWED_VALUES,
+        tenants: result.rows,
+      });
+    } catch {
+      return res.status(500).json({ error: 'Failed to fetch AI governance data' });
+    }
+  });
+
+  app.get('/super-admin/ai-governance/:tenantId', authMiddleware, requirePermission('TENANT_READ'), async (req: AuthRequest, res: Response) => {
+    if (!requireSuperAdmin(req, res)) return;
+    const tenantId = parseInt(req.params.tenantId);
+    if (!Number.isFinite(tenantId) || tenantId <= 0) return res.status(400).json({ error: 'Invalid tenant id' });
+    try {
+      const result = await pool.query(
+        `SELECT t.id, t.name, t.domain, t.is_active,
+                p.allowed_chunking_strategies, p.allowed_embedding_models, p.allowed_llm_providers,
+                p.allowed_retrieval_strategies, p.allowed_vector_stores, p.updated_at as policy_updated_at,
+                s.chunking_strategy, s.embedding_model, s.llm_provider, s.retrieval_strategy, s.vector_store
+         FROM tenants t
+         LEFT JOIN tenant_ai_policies p ON p.tenant_id = t.id
+         LEFT JOIN tenant_ai_settings s ON s.tenant_id = t.id
+         WHERE t.id = $1`,
+        [tenantId],
+      );
+      if (!result.rows.length) return res.status(404).json({ error: 'Tenant not found' });
+      return res.json({
+        options_catalog: ALLOWED_VALUES,
+        tenant: result.rows[0],
+      });
+    } catch {
+      return res.status(500).json({ error: 'Failed to fetch tenant AI governance' });
+    }
+  });
+
+  app.put('/super-admin/ai-governance/:tenantId', authMiddleware, requirePermission('TENANT_UPDATE'), async (req: AuthRequest, res: Response) => {
+    if (!requireSuperAdmin(req, res)) return;
+    const tenantId = parseInt(req.params.tenantId);
+    if (!Number.isFinite(tenantId) || tenantId <= 0) return res.status(400).json({ error: 'Invalid tenant id' });
+
+    const allowed_chunking_strategies = normalizeList(req.body?.allowed_chunking_strategies, ALLOWED_VALUES.chunking);
+    const allowed_embedding_models = normalizeList(req.body?.allowed_embedding_models, ALLOWED_VALUES.embedding);
+    const allowed_llm_providers = normalizeList(req.body?.allowed_llm_providers, ALLOWED_VALUES.llm);
+    const allowed_retrieval_strategies = normalizeList(req.body?.allowed_retrieval_strategies, ALLOWED_VALUES.retrieval);
+    const allowed_vector_stores = normalizeList(req.body?.allowed_vector_stores, ALLOWED_VALUES.vector);
+
+    try {
+      const tenantExists = await pool.query('SELECT id FROM tenants WHERE id = $1', [tenantId]);
+      if (!tenantExists.rows.length) return res.status(404).json({ error: 'Tenant not found' });
+
+      const policy = await pool.query(
+        `INSERT INTO tenant_ai_policies
+           (tenant_id, allowed_chunking_strategies, allowed_embedding_models, allowed_llm_providers,
+            allowed_retrieval_strategies, allowed_vector_stores, updated_by, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+         ON CONFLICT (tenant_id) DO UPDATE SET
+           allowed_chunking_strategies = EXCLUDED.allowed_chunking_strategies,
+           allowed_embedding_models = EXCLUDED.allowed_embedding_models,
+           allowed_llm_providers = EXCLUDED.allowed_llm_providers,
+           allowed_retrieval_strategies = EXCLUDED.allowed_retrieval_strategies,
+           allowed_vector_stores = EXCLUDED.allowed_vector_stores,
+           updated_by = EXCLUDED.updated_by,
+           updated_at = NOW()
+         RETURNING *`,
+        [
+          tenantId,
+          allowed_chunking_strategies,
+          allowed_embedding_models,
+          allowed_llm_providers,
+          allowed_retrieval_strategies,
+          allowed_vector_stores,
+          req.userId ?? null,
+        ],
+      );
+
+      await pool.query(
+        `INSERT INTO tenant_ai_settings (tenant_id, chunking_strategy, embedding_model, llm_provider, retrieval_strategy, vector_store, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,NOW())
+         ON CONFLICT (tenant_id) DO UPDATE SET
+           chunking_strategy = CASE WHEN tenant_ai_settings.chunking_strategy = ANY($7::text[]) THEN tenant_ai_settings.chunking_strategy ELSE $2 END,
+           embedding_model = CASE WHEN tenant_ai_settings.embedding_model = ANY($8::text[]) THEN tenant_ai_settings.embedding_model ELSE $3 END,
+           llm_provider = CASE WHEN tenant_ai_settings.llm_provider = ANY($9::text[]) THEN tenant_ai_settings.llm_provider ELSE $4 END,
+           retrieval_strategy = CASE WHEN tenant_ai_settings.retrieval_strategy = ANY($10::text[]) THEN tenant_ai_settings.retrieval_strategy ELSE $5 END,
+           vector_store = CASE WHEN tenant_ai_settings.vector_store = ANY($11::text[]) THEN tenant_ai_settings.vector_store ELSE $6 END,
+           updated_at = NOW()`,
+        [
+          tenantId,
+          allowed_chunking_strategies[0],
+          allowed_embedding_models[0],
+          allowed_llm_providers[0],
+          allowed_retrieval_strategies[0],
+          allowed_vector_stores[0],
+          allowed_chunking_strategies,
+          allowed_embedding_models,
+          allowed_llm_providers,
+          allowed_retrieval_strategies,
+          allowed_vector_stores,
+        ],
+      );
+
+      await logAudit(req.userId, req.tenantId, 'tenant_ai_policy.update', 'tenant_ai_policy', tenantId, {
+        tenant_id: tenantId,
+        allowed_chunking_strategies,
+        allowed_embedding_models,
+        allowed_llm_providers,
+        allowed_retrieval_strategies,
+        allowed_vector_stores,
+      }, 'warn', req);
+
+      return res.json({
+        policy: policy.rows[0],
+        message: 'AI governance policy updated for tenant',
+      });
+    } catch {
+      return res.status(500).json({ error: 'Failed to update tenant AI governance policy' });
     }
   });
 

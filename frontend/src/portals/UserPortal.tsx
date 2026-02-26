@@ -11,19 +11,65 @@ import { useAuth } from '../hooks/useAuth';
 import toast from 'react-hot-toast';
 
 const NAV_ITEMS_STUDENT = [
-  { path: '/portal', label: 'My Courses', icon: '📚' },
-  { path: '/portal/chat', label: 'AI Tutor', icon: '💬' },
-  { path: '/portal/assessments', label: 'Assessments', icon: '✏️' },
-  { path: '/portal/progress', label: 'My Progress', icon: '📈' },
+  { path: '/portal/dashboard', label: 'Dashboard', icon: '📊' },
+  { path: '/portal/my-courses', label: 'My Courses', icon: '📚' },
+  { path: '/portal/content', label: 'Lessons', icon: '📂' },
+  { path: '/portal/assignments', label: 'Assignments', icon: '📝' },
+  { path: '/portal/quizzes', label: 'Quizzes', icon: '✏️' },
+  { path: '/portal/progress', label: 'Progress', icon: '📈' },
 ];
 
 const NAV_ITEMS_FACULTY = [
-  { path: '/portal', label: 'My Courses', icon: '📚' },
-  { path: '/portal/chat', label: 'AI Tutor', icon: '💬' },
-  { path: '/portal/assessments', label: 'Assessments', icon: '✏️' },
-  { path: '/portal/create-assessment', label: 'Create Assessment', icon: '➕', permission: 'ASSESSMENT_WRITE' },
-  { path: '/portal/student-progress', label: 'Student Progress', icon: '📊', permission: 'STUDENT_PROGRESS_READ' },
+  { path: '/portal/dashboard', label: 'Dashboard', icon: '📊' },
+  { path: '/portal/my-courses', label: 'My Courses', icon: '📚' },
+  { path: '/portal/content', label: 'Content', icon: '📂', permission: 'DOCUMENT_WRITE' },
+  { path: '/portal/assignments', label: 'Assignments', icon: '📝' },
+  { path: '/portal/quizzes', label: 'Quizzes', icon: '✏️' },
+  { path: '/portal/gradebook', label: 'Gradebook', icon: '📘', permission: 'STUDENT_PROGRESS_READ' },
 ];
+
+function RoleDashboard() {
+  const { user } = useAuth();
+  const [courses, setCourses] = useState<Record<string, unknown>[]>([]);
+  const [documents, setDocuments] = useState<Record<string, unknown>[]>([]);
+  const [videos, setVideos] = useState<Record<string, unknown>[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.all([
+      userApi.getCourses(),
+      userApi.getDocuments(),
+      userApi.getVideos(),
+    ])
+      .then(([c, d, v]) => {
+        setCourses(c.data.courses ?? c.data ?? []);
+        setDocuments(d.data ?? []);
+        setVideos(v.data ?? []);
+      })
+      .catch(() => {
+        setCourses([]);
+        setDocuments([]);
+        setVideos([]);
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <div style={uiStyles.loadingCenter}><Spinner /></div>;
+
+  return (
+    <div>
+      <PageHeader
+        title={user?.role === 'FACULTY' ? 'Faculty Dashboard' : 'Student Dashboard'}
+        subtitle={user?.role === 'FACULTY' ? 'Manage course delivery and assessments' : 'Track learning and submissions'}
+      />
+      <div style={autoGrid(220, true)}>
+        <StatCard label="My Courses" value={courses.length} icon="📚" />
+        <StatCard label="Documents" value={documents.length} icon="📄" />
+        <StatCard label="Lecture Videos" value={videos.length} icon="🎬" />
+      </div>
+    </div>
+  );
+}
 
 // ============================================================
 // Courses
@@ -78,6 +124,185 @@ function Courses() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function ContentModule() {
+  const { user, hasPermission } = useAuth();
+  const isFaculty = user?.role === 'FACULTY';
+  const [courses, setCourses] = useState<Record<string, unknown>[]>([]);
+  const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
+  const [documents, setDocuments] = useState<Record<string, unknown>[]>([]);
+  const [videos, setVideos] = useState<Record<string, unknown>[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [submittingYt, setSubmittingYt] = useState(false);
+  const [ytUrl, setYtUrl] = useState('');
+  const [ytTitle, setYtTitle] = useState('');
+  const canUpload = isFaculty && hasPermission('DOCUMENT_WRITE');
+
+  const load = useCallback(async (courseId?: number | null) => {
+    setLoading(true);
+    try {
+      const [courseRes, docRes, videoRes] = await Promise.all([
+        userApi.getCourses(),
+        userApi.getDocuments(courseId ?? undefined),
+        userApi.getVideos(),
+      ]);
+      const courseList = courseRes.data.courses ?? courseRes.data ?? [];
+      setCourses(courseList);
+      const nextCourseId = courseId ?? selectedCourseId ?? (courseList[0]?.id as number | undefined) ?? null;
+      setSelectedCourseId(nextCourseId);
+      const docs = docRes.data ?? [];
+      const vids = (videoRes.data ?? []).filter((v: Record<string, unknown>) =>
+        nextCourseId ? Number(v.course_id) === Number(nextCourseId) : true,
+      );
+      setDocuments(docs);
+      setVideos(vids);
+    } catch {
+      setCourses([]);
+      setDocuments([]);
+      setVideos([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedCourseId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const onCourseChange = (value: string) => {
+    const id = value ? Number(value) : null;
+    setSelectedCourseId(id);
+    load(id);
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !selectedCourseId) return;
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('course_id', String(selectedCourseId));
+      await userApi.uploadDocument(formData);
+      toast.success('Document uploaded');
+      await load(selectedCourseId);
+    } catch (err: unknown) {
+      toast.error((err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Upload failed');
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleYoutube = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedCourseId) return;
+    setSubmittingYt(true);
+    try {
+      await userApi.uploadYoutube({
+        youtube_url: ytUrl,
+        title: ytTitle || 'Lecture recording',
+        course_id: selectedCourseId,
+      });
+      toast.success('Video added');
+      setYtUrl('');
+      setYtTitle('');
+      await load(selectedCourseId);
+    } catch (err: unknown) {
+      toast.error((err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Failed to add video');
+    } finally {
+      setSubmittingYt(false);
+    }
+  };
+
+  const deleteDocument = async (id: number) => {
+    try {
+      await userApi.deleteDocument(id);
+      toast.success('Document deleted');
+      await load(selectedCourseId);
+    } catch {
+      toast.error('Failed to delete document');
+    }
+  };
+
+  const deleteVideo = async (id: number) => {
+    try {
+      await userApi.deleteVideo(id);
+      toast.success('Video deleted');
+      await load(selectedCourseId);
+    } catch {
+      toast.error('Failed to delete video');
+    }
+  };
+
+  if (loading) return <div style={uiStyles.loadingCenter}><Spinner /></div>;
+
+  return (
+    <div>
+      <PageHeader
+        title={isFaculty ? 'Content' : 'Lessons'}
+        subtitle={isFaculty ? 'Upload and manage content in assigned courses' : 'View learning content by enrolled course'}
+      />
+      <Card style={{ marginBottom: '16px' }}>
+        <Field label="Course">
+          <Select value={selectedCourseId ?? ''} onChange={(e) => onCourseChange(e.target.value)}>
+            <option value="" disabled>Select course</option>
+            {courses.map((course) => (
+              <option key={String(course.id)} value={String(course.id)}>{String(course.title)}</option>
+            ))}
+          </Select>
+        </Field>
+      </Card>
+
+      {canUpload && (
+        <div style={autoGrid(340)}>
+          <Card>
+            <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>Upload Document</h3>
+            <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>PDF, DOCX, TXT, MD, CSV, PPTX, XLSX</p>
+            <Input type="file" onChange={handleFileUpload} disabled={uploading || !selectedCourseId} />
+          </Card>
+          <Card>
+            <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>Add Lecture Video</h3>
+            <form onSubmit={handleYoutube}>
+              <Field label="YouTube URL" required>
+                <Input value={ytUrl} onChange={(e) => setYtUrl(e.target.value)} required />
+              </Field>
+              <Field label="Title">
+                <Input value={ytTitle} onChange={(e) => setYtTitle(e.target.value)} />
+              </Field>
+              <Button type="submit" loading={submittingYt} disabled={!selectedCourseId}>Save Video</Button>
+            </form>
+          </Card>
+        </div>
+      )}
+
+      <Card style={{ marginTop: '16px' }}>
+        <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>Documents</h3>
+        {documents.length === 0 && <p style={{ color: 'var(--text-muted)' }}>No documents for this course.</p>}
+        {documents.map((doc) => (
+          <div key={String(doc.id)} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+            <span style={{ color: 'var(--text-primary)' }}>{String(doc.filename ?? 'Untitled')}</span>
+            {canUpload && hasPermission('DOCUMENT_DELETE') && (
+              <Button size="sm" variant="danger" onClick={() => deleteDocument(Number(doc.id))}>Delete</Button>
+            )}
+          </div>
+        ))}
+      </Card>
+
+      <Card style={{ marginTop: '16px' }}>
+        <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>Lecture Videos</h3>
+        {videos.length === 0 && <p style={{ color: 'var(--text-muted)' }}>No videos for this course.</p>}
+        {videos.map((video) => (
+          <div key={String(video.id)} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+            <span style={{ color: 'var(--text-primary)' }}>{String(video.title ?? video.youtube_url ?? 'Video')}</span>
+            {canUpload && hasPermission('VIDEO_DELETE') && (
+              <Button size="sm" variant="danger" onClick={() => deleteVideo(Number(video.id))}>Delete</Button>
+            )}
+          </div>
+        ))}
+      </Card>
     </div>
   );
 }
@@ -341,7 +566,18 @@ function Progress() {
   useEffect(() => {
     userApi.getProgress().then((r) => setData(r.data)).catch(() => setData({}));
   }, []);
-  const m = (data ?? {}) as Record<string, number>;
+  const raw = (data ?? {}) as Record<string, unknown>;
+  const toNum = (value: unknown): number => {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string') return Number(value) || 0;
+    return 0;
+  };
+  const m = {
+    coursesCompleted: toNum(raw.coursesCompleted ?? raw.courses_completed),
+    assessmentsTaken: toNum(raw.assessmentsTaken ?? raw.assessments_taken),
+    avgScore: toNum(raw.avgScore ?? raw.avg_score),
+    chatMessages: toNum(raw.chatMessages ?? raw.chat_messages),
+  };
 
   return (
     <div>
@@ -478,17 +714,24 @@ export default function UserPortal() {
       accentColor={accentColor}
     >
       <Routes>
-        <Route index element={<Courses />} />
+        <Route index element={<Navigate to="/portal/dashboard" replace />} />
+        <Route path="dashboard" element={<RoleDashboard />} />
+        <Route path="my-courses" element={<Courses />} />
+        <Route path="courses" element={<Navigate to="/portal/my-courses" replace />} />
+        <Route path="content" element={<ContentModule />} />
+        <Route path="assignments" element={<Assessments />} />
+        <Route path="quizzes" element={<Assessments />} />
         <Route path="chat" element={<Chat />} />
         <Route path="assessments" element={<Assessments />} />
         <Route path="progress" element={<Progress />} />
         {user.role === 'FACULTY' && (
           <>
-            <Route path="student-progress" element={<StudentProgress />} />
+            <Route path="gradebook" element={<StudentProgress />} />
+            <Route path="student-progress" element={<Navigate to="/portal/gradebook" replace />} />
             <Route path="create-assessment" element={<CreateAssessment />} />
           </>
         )}
-        <Route path="*" element={<Navigate to="/portal" />} />
+        <Route path="*" element={<Navigate to="/portal/dashboard" />} />
       </Routes>
     </SidebarLayout>
   );

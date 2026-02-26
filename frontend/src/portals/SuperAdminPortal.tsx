@@ -13,6 +13,7 @@ import toast from 'react-hot-toast';
 const NAV_ITEMS = [
   { path: '/super-admin', label: 'Dashboard', icon: '📊' },
   { path: '/super-admin/universities', label: 'Universities', icon: '🏛️', permission: 'TENANT_READ' },
+  { path: '/super-admin/ai-governance', label: 'AI Governance', icon: '🤖', permission: 'TENANT_UPDATE' },
   { path: '/super-admin/internal-users', label: 'Internal Team', icon: '👥', permission: 'INTERNAL_USER_READ' },
   { path: '/super-admin/analytics', label: 'Analytics', icon: '📈', permission: 'GLOBAL_ANALYTICS_READ' },
   { path: '/super-admin/audit-logs', label: 'Audit Logs', icon: '🔍', permission: 'AUDIT_LOG_READ' },
@@ -37,17 +38,34 @@ function Dashboard() {
 
   if (loading) return <div style={uiStyles.loadingCenter}><Spinner /></div>;
 
-  const s = stats as Record<string, number>;
+  const root = (stats ?? {}) as Record<string, unknown>;
+  const nested = (root.stats ?? {}) as Record<string, unknown>;
+  const toNum = (value: unknown): number => {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string') return Number(value) || 0;
+    if (value && typeof value === 'object' && 'total' in (value as Record<string, unknown>)) {
+      return Number((value as { total?: unknown }).total) || 0;
+    }
+    return 0;
+  };
+  const totalTenants = toNum(root.totalTenants ?? nested.tenants ?? (nested.tenants as Record<string, unknown>)?.total);
+  const activeTenants = toNum(root.activeTenants ?? (nested.tenants as Record<string, unknown>)?.active);
+  const totalUsers = toNum(root.totalUsers ?? nested.users ?? (nested.users as Record<string, unknown>)?.total);
+  const tenantUsers = toNum((nested.users as Record<string, unknown>)?.tenant_users);
+  const activeUsers = toNum(root.activeUsers ?? tenantUsers);
+  const totalDocuments = toNum(root.totalDocuments ?? nested.documents ?? (nested.documents as Record<string, unknown>)?.total);
+  const totalChats = toNum(root.totalChats ?? nested.conversations ?? (nested.conversations as Record<string, unknown>)?.total);
+
   return (
     <div>
       <PageHeader title="Super Admin Dashboard" subtitle="Platform-wide overview" />
       <div style={autoGrid(200, true)}>
-        <StatCard label="Total Universities" value={s.totalTenants ?? 0} icon="🏛️" />
-        <StatCard label="Active Tenants" value={s.activeTenants ?? 0} icon="✅" />
-        <StatCard label="Total Users" value={s.totalUsers ?? 0} icon="👥" />
-        <StatCard label="Active Users" value={s.activeUsers ?? 0} icon="🔥" />
-        <StatCard label="Documents" value={s.totalDocuments ?? 0} icon="📄" />
-        <StatCard label="AI Chats" value={s.totalChats ?? 0} icon="💬" />
+        <StatCard label="Total Universities" value={totalTenants} icon="🏛️" />
+        <StatCard label="Active Tenants" value={activeTenants} icon="✅" />
+        <StatCard label="Total Users" value={totalUsers} icon="👥" />
+        <StatCard label="Active Users" value={activeUsers} icon="🔥" />
+        <StatCard label="Documents" value={totalDocuments} icon="📄" />
+        <StatCard label="AI Chats" value={totalChats} icon="💬" />
       </div>
       <Card>
         <p style={{ color: 'var(--text-secondary)', fontSize: '14px', margin: 0 }}>
@@ -367,6 +385,215 @@ function InternalUsers() {
 }
 
 // ============================================================
+// AI Governance
+// ============================================================
+function AIGovernance() {
+  type PolicyForm = {
+    chunking_strategy: string;
+    embedding_model: string;
+    llm_provider: string;
+    retrieval_strategy: string;
+    vector_store: string;
+  };
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [tenants, setTenants] = useState<Record<string, unknown>[]>([]);
+  const [catalog, setCatalog] = useState<Record<string, string[]>>({});
+  const [selectedTenantId, setSelectedTenantId] = useState<number | null>(null);
+  const [form, setForm] = useState<PolicyForm>({
+    chunking_strategy: '',
+    embedding_model: '',
+    llm_provider: '',
+    retrieval_strategy: '',
+    vector_store: '',
+  });
+
+  const syncFormFromTenant = (tenant: Record<string, unknown> | null, options: Record<string, string[]>) => {
+    const first = (arr: unknown) => (Array.isArray(arr) && arr.length ? String(arr[0]) : '');
+    const fallback = {
+      chunking_strategy: first(options.chunking),
+      embedding_model: first(options.embedding),
+      llm_provider: first(options.llm),
+      retrieval_strategy: first(options.retrieval),
+      vector_store: first(options.vector),
+    };
+    if (!tenant) {
+      setForm(fallback);
+      return;
+    }
+    setForm({
+      chunking_strategy: first(tenant.allowed_chunking_strategies) || first(tenant.chunking_strategy ? [tenant.chunking_strategy] : []) || fallback.chunking_strategy,
+      embedding_model: first(tenant.allowed_embedding_models) || first(tenant.embedding_model ? [tenant.embedding_model] : []) || fallback.embedding_model,
+      llm_provider: first(tenant.allowed_llm_providers) || first(tenant.llm_provider ? [tenant.llm_provider] : []) || fallback.llm_provider,
+      retrieval_strategy: first(tenant.allowed_retrieval_strategies) || first(tenant.retrieval_strategy ? [tenant.retrieval_strategy] : []) || fallback.retrieval_strategy,
+      vector_store: first(tenant.allowed_vector_stores) || first(tenant.vector_store ? [tenant.vector_store] : []) || fallback.vector_store,
+    });
+  };
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await superAdminApi.getAIGovernance();
+      const data = r.data ?? {};
+      const list = (data.tenants ?? []) as Record<string, unknown>[];
+      const options = (data.options_catalog ?? {}) as Record<string, string[]>;
+      setTenants(list);
+      setCatalog(options);
+      const currentTenantId = selectedTenantId ?? (list[0]?.id as number | undefined) ?? null;
+      setSelectedTenantId(currentTenantId);
+      const tenant = list.find((t) => Number(t.id) === Number(currentTenantId)) ?? null;
+      syncFormFromTenant(tenant, options);
+    } catch {
+      setTenants([]);
+      setCatalog({});
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedTenantId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const selectedTenant = tenants.find((t) => Number(t.id) === Number(selectedTenantId)) ?? null;
+
+  const OptionGroup = ({
+    title,
+    value,
+    onChange,
+    values,
+  }: {
+    title: string;
+    value: string;
+    onChange: (next: string) => void;
+    values: string[];
+  }) => (
+    <Field label={title}>
+      <Select value={value} onChange={(e) => onChange(e.target.value)}>
+        {values.map((option) => (
+          <option key={`${title}-${option}`} value={option}>{option}</option>
+        ))}
+      </Select>
+    </Field>
+  );
+
+  const handleSelectTenant = (tenantId: number) => {
+    setSelectedTenantId(tenantId);
+    const tenant = tenants.find((t) => Number(t.id) === Number(tenantId)) ?? null;
+    syncFormFromTenant(tenant, catalog);
+  };
+
+  const handleSave = async () => {
+    if (!selectedTenantId) return;
+    const invalid = !form.chunking_strategy || !form.embedding_model || !form.llm_provider || !form.retrieval_strategy || !form.vector_store;
+    if (invalid) {
+      toast.error('Select one value for each AI module');
+      return;
+    }
+    setSaving(true);
+    try {
+      await superAdminApi.updateTenantAIGovernance(selectedTenantId, {
+        allowed_chunking_strategies: [form.chunking_strategy],
+        allowed_embedding_models: [form.embedding_model],
+        allowed_llm_providers: [form.llm_provider],
+        allowed_retrieval_strategies: [form.retrieval_strategy],
+        allowed_vector_stores: [form.vector_store],
+      });
+      toast.success('AI governance policy saved');
+      await load();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string; message?: string } } })?.response?.data?.error
+        ?? (err as { response?: { data?: { error?: string; message?: string } } })?.response?.data?.message
+        ?? 'Failed to save governance policy';
+      toast.error(msg);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <div style={uiStyles.loadingCenter}><Spinner /></div>;
+
+  return (
+    <div>
+      <PageHeader title="AI Governance" subtitle="Super Admin controls approved AI options per institution" />
+
+      <div style={{ ...autoGrid(340), alignItems: 'start' }}>
+        <Card>
+          <h3 style={{ margin: '0 0 12px', fontSize: '16px', color: 'var(--text-primary)' }}>Institutions</h3>
+          <div style={{ display: 'grid', gap: '8px' }}>
+            {tenants.map((tenant) => {
+              const active = Number(tenant.id) === Number(selectedTenantId);
+              return (
+                <button
+                  key={String(tenant.id)}
+                  onClick={() => handleSelectTenant(Number(tenant.id))}
+                  style={{
+                    textAlign: 'left',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: '10px',
+                    padding: '10px 12px',
+                    background: active ? 'var(--brand-soft)' : 'var(--surface-subtle)',
+                    color: 'var(--text-primary)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <div style={{ fontWeight: 600 }}>{String(tenant.name ?? '')}</div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{String(tenant.domain ?? '')}</div>
+                </button>
+              );
+            })}
+            {!tenants.length && <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '14px' }}>No tenants found</p>}
+          </div>
+        </Card>
+
+        <Card>
+          <h3 style={{ margin: '0 0 8px', fontSize: '16px', color: 'var(--text-primary)' }}>
+            {selectedTenant ? `${String(selectedTenant.name)} AI Policy` : 'AI Policy'}
+          </h3>
+          <p style={{ margin: '0 0 16px', color: 'var(--text-muted)', fontSize: '13px' }}>
+            Set exactly one approved configuration per AI module for this institution.
+          </p>
+
+          <OptionGroup
+            title="Chunking Strategy"
+            value={form.chunking_strategy}
+            onChange={(next) => setForm((prev) => ({ ...prev, chunking_strategy: next }))}
+            values={catalog.chunking ?? []}
+          />
+          <OptionGroup
+            title="Embedding Model"
+            value={form.embedding_model}
+            onChange={(next) => setForm((prev) => ({ ...prev, embedding_model: next }))}
+            values={catalog.embedding ?? []}
+          />
+          <OptionGroup
+            title="LLM Provider"
+            value={form.llm_provider}
+            onChange={(next) => setForm((prev) => ({ ...prev, llm_provider: next }))}
+            values={catalog.llm ?? []}
+          />
+          <OptionGroup
+            title="Retrieval Strategy"
+            value={form.retrieval_strategy}
+            onChange={(next) => setForm((prev) => ({ ...prev, retrieval_strategy: next }))}
+            values={catalog.retrieval ?? []}
+          />
+          <OptionGroup
+            title="Vector Store"
+            value={form.vector_store}
+            onChange={(next) => setForm((prev) => ({ ...prev, vector_store: next }))}
+            values={catalog.vector ?? []}
+          />
+
+          <div style={uiStyles.actionRowEnd}>
+            <Button onClick={handleSave} loading={saving} disabled={!selectedTenantId}>Save Governance Policy</Button>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // Analytics
 // ============================================================
 function Analytics() {
@@ -448,12 +675,16 @@ export default function SuperAdminPortal() {
   if (!user || !['SUPER_ADMIN', 'INTERNAL_ADMIN', 'INTERNAL_STAFF'].includes(user.role)) {
     return <Navigate to="/login" replace />;
   }
+  const navItems = user.role === 'SUPER_ADMIN'
+    ? NAV_ITEMS
+    : NAV_ITEMS.filter((item) => item.path !== '/super-admin/ai-governance');
 
   return (
-    <SidebarLayout navItems={NAV_ITEMS} title="EduLMS" subtitle="Super Admin" accentColor="var(--brand-600)">
+    <SidebarLayout navItems={navItems} title="EduLMS" subtitle="Super Admin" accentColor="var(--brand-600)">
       <Routes>
         <Route index element={<Dashboard />} />
         <Route path="universities" element={hasPermission('TENANT_READ') ? <Universities /> : <Navigate to="/super-admin" />} />
+        <Route path="ai-governance" element={hasPermission('TENANT_UPDATE') && user.role === 'SUPER_ADMIN' ? <AIGovernance /> : <Navigate to="/super-admin" />} />
         <Route path="internal-users" element={hasPermission('INTERNAL_USER_READ') ? <InternalUsers /> : <Navigate to="/super-admin" />} />
         <Route path="analytics" element={<Analytics />} />
         <Route path="audit-logs" element={<AuditLogs />} />

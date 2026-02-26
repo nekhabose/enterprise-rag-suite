@@ -16,12 +16,26 @@ export function createDocumentService(deps: LegacyRouteDeps) {
       const { provider, model, embedding_model, chunking_strategy, course_id, subject, year } = req.body;
 
       try {
+        const normalizedCourseId = course_id ? Number(course_id) : null;
+        if (req.userRole === ROLES.FACULTY) {
+          if (!normalizedCourseId || !Number.isFinite(normalizedCourseId)) {
+            return res.status(400).json({ error: 'Faculty upload requires a valid course_id' });
+          }
+          const assigned = await repo.query(
+            'SELECT id FROM courses WHERE id = $1 AND tenant_id = $2 AND faculty_id = $3',
+            [normalizedCourseId, tenantId, userId],
+          );
+          if (!assigned.rows.length) {
+            return res.status(403).json({ error: 'Faculty can upload content only to assigned courses' });
+          }
+        }
+
         const absolutePath = path.resolve(req.file.path);
         const dbResult = await repo.query(
           `INSERT INTO documents (user_id, tenant_id, filename, file_path, file_type, file_size_bytes, subject, year, course_id)
            VALUES ($1,$2,$3,$4,'pdf',$5,$6,$7,$8) RETURNING id`,
           [userId, tenantId, req.file.originalname, absolutePath,
-            req.file.size, subject ?? null, year ? parseInt(year) : null, course_id ?? null],
+            req.file.size, subject ?? null, year ? parseInt(year) : null, normalizedCourseId],
         );
         const documentId = dbResult.rows[0].id;
 

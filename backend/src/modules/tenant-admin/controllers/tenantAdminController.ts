@@ -15,6 +15,8 @@ export function createTenantAdminController(deps: LegacyRouteDeps) {
     listCourses: (req: AuthRequest, res: Response) => service.listCourses(req, res),
     createCourse: (req: AuthRequest, res: Response) => service.createCourse(req, res),
     updateCourse: (req: AuthRequest, res: Response) => service.updateCourse(req, res),
+    listCourseEnrollments: (req: AuthRequest, res: Response) => service.listCourseEnrollments(req, res),
+    replaceCourseEnrollments: (req: AuthRequest, res: Response) => service.replaceCourseEnrollments(req, res),
     getAiSettings: (req: AuthRequest, res: Response) => service.getAiSettings(req, res),
     updateAiSettings: (req: AuthRequest, res: Response) => service.updateAiSettings(req, res),
     auditLogs: (req: AuthRequest, res: Response) => service.auditLogs(req, res),

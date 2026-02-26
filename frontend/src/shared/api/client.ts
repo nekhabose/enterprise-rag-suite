@@ -61,6 +61,10 @@ export const superAdminApi = {
   endImpersonation: () => api.post('/super-admin/impersonate/end'),
   getAuditLogs: (params?: Record<string, unknown>) => api.get('/super-admin/audit-logs', { params }),
   getAnalytics: () => api.get('/super-admin/analytics'),
+  getAIGovernance: () => api.get('/super-admin/ai-governance'),
+  getTenantAIGovernance: (tenantId: number) => api.get(`/super-admin/ai-governance/${tenantId}`),
+  updateTenantAIGovernance: (tenantId: number, data: Record<string, unknown>) =>
+    api.put(`/super-admin/ai-governance/${tenantId}`, data),
 };
 
 export const tenantAdminApi = {
@@ -73,6 +77,9 @@ export const tenantAdminApi = {
   createCourse: (data: Record<string, unknown>) => api.post('/tenant-admin/courses', data),
   updateCourse: (id: number, data: Record<string, unknown>) => api.put(`/tenant-admin/courses/${id}`, data),
   deleteCourse: (id: number) => api.put(`/tenant-admin/courses/${id}`, { is_active: false }),
+  getCourseEnrollments: (id: number) => api.get(`/tenant-admin/courses/${id}/enrollments`),
+  updateCourseEnrollments: (id: number, student_ids: number[]) =>
+    api.put(`/tenant-admin/courses/${id}/enrollments`, { student_ids }),
   getAISettings: () => api.get('/tenant-admin/ai-settings'),
   updateAISettings: (data: Record<string, unknown>) => api.put('/tenant-admin/ai-settings', data),
   getConnectors: () => api.get('/connectors'),
@@ -96,6 +103,13 @@ export const userApi = {
   getCourses: () => api.get('/portal/courses'),
   getCourse: (id: number) => api.get(`/portal/courses/${id}`),
   getDocuments: (courseId?: number) => api.get('/documents', { params: { course_id: courseId } }),
+  getVideos: () => api.get('/videos'),
+  uploadDocument: (formData: FormData) => api.post('/documents/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  }),
+  uploadYoutube: (data: Record<string, unknown>) => api.post('/videos/upload', data),
+  deleteDocument: (id: number) => api.delete(`/documents/${id}`),
+  deleteVideo: (id: number) => api.delete(`/videos/${id}`),
   chat: (data: Record<string, unknown>) =>
     api.post('/chat/send', {
       question: data.message ?? data.question,

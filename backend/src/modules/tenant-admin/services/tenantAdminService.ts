@@ -6,6 +6,13 @@ import { createTenantAdminRepository } from '../repositories/tenantAdminReposito
 export function createTenantAdminService(deps: LegacyRouteDeps) {
   const { pool, ROLES, bcrypt, crypto, logAudit } = deps;
   const repo = createTenantAdminRepository(pool);
+  const POLICY_DEFAULTS = {
+    allowed_chunking_strategies: ['semantic'] as string[],
+    allowed_embedding_models: ['minilm'] as string[],
+    allowed_llm_providers: ['groq'] as string[],
+    allowed_retrieval_strategies: ['hybrid'] as string[],
+    allowed_vector_stores: ['postgres'] as string[],
+  };
 
   return {
     async dashboard(req: AuthRequest, res: Response) {
@@ -168,15 +175,25 @@ export function createTenantAdminService(deps: LegacyRouteDeps) {
     },
 
     async createCourse(req: AuthRequest, res: Response) {
-      const { title, description, faculty_id } = req.body;
+      const { title, description, faculty_id, status } = req.body;
       const tenantId = req.tenantId!;
       if (!title) return res.status(400).json({ error: 'Title required' });
 
       try {
+        const normalizedStatus = ['DRAFT', 'ACTIVE', 'ARCHIVED'].includes(String(status).toUpperCase())
+          ? String(status).toUpperCase()
+          : 'DRAFT';
         const result = await repo.query(
-          `INSERT INTO courses (tenant_id, title, description, faculty_id)
-           VALUES ($1,$2,$3,$4) RETURNING *`,
-          [tenantId, title, description, faculty_id ?? req.userId],
+          `INSERT INTO courses (tenant_id, title, description, faculty_id, is_active, settings)
+           VALUES ($1,$2,$3,$4,$5,$6::jsonb) RETURNING *`,
+          [
+            tenantId,
+            title,
+            description,
+            faculty_id ?? null,
+            normalizedStatus === 'ACTIVE',
+            JSON.stringify({ status: normalizedStatus }),
+          ],
         );
         logAudit(req.userId, tenantId, 'course.create', 'course', result.rows[0].id, { title }, 'info', req);
         return res.status(201).json({ course: result.rows[0] });
@@ -188,18 +205,32 @@ export function createTenantAdminService(deps: LegacyRouteDeps) {
     async updateCourse(req: AuthRequest, res: Response) {
       const courseId = parseInt(req.params.id);
       const tenantId = req.tenantId!;
-      const { title, description, is_active, faculty_id } = req.body;
+      const { title, description, is_active, faculty_id, status } = req.body;
 
       try {
+        const current = await repo.query('SELECT settings FROM courses WHERE id = $1 AND tenant_id = $2', [courseId, tenantId]);
+        if (!current.rows.length) return res.status(404).json({ error: 'Course not found' });
+        const currentSettings = (current.rows[0].settings ?? {}) as Record<string, unknown>;
+        const normalizedStatus = status ? String(status).toUpperCase() : String(currentSettings.status ?? (is_active ? 'ACTIVE' : 'DRAFT')).toUpperCase();
+        const statusSafe = ['DRAFT', 'ACTIVE', 'ARCHIVED'].includes(normalizedStatus) ? normalizedStatus : 'DRAFT';
         const result = await repo.query(
           `UPDATE courses SET
              title = COALESCE($1, title),
              description = COALESCE($2, description),
              is_active = COALESCE($3, is_active),
              faculty_id = COALESCE($4, faculty_id),
+             settings = COALESCE($5::jsonb, settings),
              updated_at = NOW()
-           WHERE id = $5 AND tenant_id = $6 RETURNING *`,
-          [title, description, is_active, faculty_id, courseId, tenantId],
+           WHERE id = $6 AND tenant_id = $7 RETURNING *`,
+          [
+            title,
+            description,
+            is_active ?? (statusSafe === 'ACTIVE'),
+            faculty_id,
+            JSON.stringify({ ...currentSettings, status: statusSafe }),
+            courseId,
+            tenantId,
+          ],
         );
         if (!result.rows.length) return res.status(404).json({ error: 'Course not found' });
         return res.json({ course: result.rows[0] });
@@ -208,11 +239,78 @@ export function createTenantAdminService(deps: LegacyRouteDeps) {
       }
     },
 
+    async listCourseEnrollments(req: AuthRequest, res: Response) {
+      const tenantId = req.tenantId!;
+      const courseId = parseInt(req.params.id);
+      if (!Number.isFinite(courseId) || courseId <= 0) return res.status(400).json({ error: 'Invalid course ID' });
+      try {
+        const course = await repo.query('SELECT id FROM courses WHERE id = $1 AND tenant_id = $2', [courseId, tenantId]);
+        if (!course.rows.length) return res.status(404).json({ error: 'Course not found' });
+        const result = await repo.query(
+          `SELECT ce.user_id, u.email, u.first_name, u.last_name
+           FROM course_enrollments ce
+           JOIN users u ON u.id = ce.user_id
+           WHERE ce.course_id = $1
+           ORDER BY u.email`,
+          [courseId],
+        );
+        return res.json({ enrollments: result.rows, student_ids: result.rows.map((r) => r.user_id) });
+      } catch {
+        return res.status(500).json({ error: 'Failed to fetch enrollments' });
+      }
+    },
+
+    async replaceCourseEnrollments(req: AuthRequest, res: Response) {
+      const tenantId = req.tenantId!;
+      const courseId = parseInt(req.params.id);
+      const ids = Array.isArray(req.body?.student_ids) ? req.body.student_ids : [];
+      const studentIds = Array.from(new Set(ids.map((v: unknown) => Number(v)).filter((v: number) => Number.isFinite(v) && v > 0)));
+      if (!Number.isFinite(courseId) || courseId <= 0) return res.status(400).json({ error: 'Invalid course ID' });
+      try {
+        const course = await repo.query('SELECT id FROM courses WHERE id = $1 AND tenant_id = $2', [courseId, tenantId]);
+        if (!course.rows.length) return res.status(404).json({ error: 'Course not found' });
+
+        if (studentIds.length) {
+          const valid = await repo.query(
+            `SELECT id FROM users
+             WHERE tenant_id = $1 AND role = $2 AND id = ANY($3::int[])`,
+            [tenantId, ROLES.STUDENT, studentIds],
+          );
+          if (valid.rows.length !== studentIds.length) {
+            return res.status(400).json({ error: 'One or more students are invalid for this tenant' });
+          }
+        }
+
+        await repo.query('DELETE FROM course_enrollments WHERE course_id = $1', [courseId]);
+        for (const studentId of studentIds) {
+          await repo.query(
+            `INSERT INTO course_enrollments (course_id, user_id, enrolled_at)
+             VALUES ($1,$2,NOW())`,
+            [courseId, studentId],
+          );
+        }
+
+        logAudit(req.userId, tenantId, 'course.enrollments.update', 'course', courseId, { student_ids: studentIds }, 'info', req);
+        return res.json({ success: true, student_ids: studentIds });
+      } catch {
+        return res.status(500).json({ error: 'Failed to update enrollments' });
+      }
+    },
+
     async getAiSettings(req: AuthRequest, res: Response) {
       const tenantId = req.tenantId!;
       try {
-        const result = await repo.query('SELECT * FROM tenant_ai_settings WHERE tenant_id = $1', [tenantId]);
-        return res.json(result.rows[0] ?? {});
+        const [settings, policy] = await Promise.all([
+          repo.query('SELECT * FROM tenant_ai_settings WHERE tenant_id = $1', [tenantId]),
+          repo.query('SELECT * FROM tenant_ai_policies WHERE tenant_id = $1', [tenantId]),
+        ]);
+        const allowed = policy.rows[0] ?? POLICY_DEFAULTS;
+        return res.json({
+          settings: settings.rows[0] ?? {},
+          allowed_options: allowed,
+          governed_by_super_admin: Boolean(policy.rows.length),
+          policy_required: !policy.rows.length,
+        });
       } catch {
         return res.status(500).json({ error: 'Failed to get AI settings' });
       }
@@ -227,6 +325,24 @@ export function createTenantAdminService(deps: LegacyRouteDeps) {
       } = req.body;
 
       try {
+        const policyResult = await repo.query('SELECT * FROM tenant_ai_policies WHERE tenant_id = $1', [tenantId]);
+        if (!policyResult.rows.length) {
+          return res.status(403).json({ error: 'AI configuration not enabled by Super Admin for this tenant' });
+        }
+        const policy = policyResult.rows[0];
+        const checks: Array<[string, string | undefined, string[]]> = [
+          ['chunking_strategy', chunking_strategy, policy.allowed_chunking_strategies ?? []],
+          ['embedding_model', embedding_model, policy.allowed_embedding_models ?? []],
+          ['llm_provider', llm_provider, policy.allowed_llm_providers ?? []],
+          ['retrieval_strategy', retrieval_strategy, policy.allowed_retrieval_strategies ?? []],
+          ['vector_store', vector_store, policy.allowed_vector_stores ?? []],
+        ];
+        for (const [field, value, allowed] of checks) {
+          if (value != null && !allowed.includes(String(value))) {
+            return res.status(403).json({ error: `Value for ${field} is not allowed by Super Admin policy`, field, value, allowed });
+          }
+        }
+
         const result = await repo.query(
           `INSERT INTO tenant_ai_settings
              (tenant_id, llm_provider, llm_model, embedding_provider, embedding_model,

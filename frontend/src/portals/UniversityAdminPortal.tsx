@@ -14,8 +14,6 @@ const NAV_ITEMS = [
   { path: '/university-admin', label: 'Dashboard', icon: '📊' },
   { path: '/university-admin/users', label: 'Users', icon: '👥', permission: 'TENANT_USER_READ' },
   { path: '/university-admin/courses', label: 'Courses', icon: '📚', permission: 'COURSE_READ' },
-  { path: '/university-admin/content', label: 'Content', icon: '📂', permission: 'DOCUMENT_READ' },
-  { path: '/university-admin/ai-settings', label: 'AI Settings', icon: '🤖', permission: 'AI_SETTINGS_UPDATE' },
   { path: '/university-admin/connectors', label: 'Connectors', icon: '🔌', permission: 'CONNECTOR_CONFIGURE' },
   { path: '/university-admin/analytics', label: 'Analytics', icon: '📈', permission: 'TENANT_ANALYTICS_READ' },
   { path: '/university-admin/audit-logs', label: 'Audit Logs', icon: '🔍', permission: 'AUDIT_LOG_READ' },
@@ -37,7 +35,8 @@ function Dashboard() {
   }, []);
 
   if (loading) return <div style={uiStyles.loadingCenter}><Spinner /></div>;
-  const s = stats ?? {};
+  const root = (stats ?? {}) as Record<string, unknown>;
+  const s = ((root.stats as Record<string, unknown>) ?? root) as Record<string, unknown>;
   const asNumber = (value: unknown): number => {
     if (typeof value === 'number') return value;
     if (typeof value === 'string') return Number(value) || 0;
@@ -232,18 +231,37 @@ function UsersManagement() {
 // ============================================================
 function Courses() {
   const [courses, setCourses] = useState<Record<string, unknown>[]>([]);
+  const [users, setUsers] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editCourse, setEditCourse] = useState<Record<string, unknown> | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Record<string, unknown> | null>(null);
-  const [form, setForm] = useState({ title: '', description: '', subject: '' });
+  const [form, setForm] = useState({
+    title: '',
+    description: '',
+    subject: '',
+    facultyId: '',
+    status: 'DRAFT',
+    studentIds: [] as number[],
+  });
   const [saving, setSaving] = useState(false);
   const { hasPermission } = useAuth();
+  const facultyUsers = users.filter((u) => String(u.role) === 'FACULTY');
+  const studentUsers = users.filter((u) => String(u.role) === 'STUDENT');
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { const r = await tenantAdminApi.getCourses(); setCourses(r.data.courses ?? r.data ?? []); }
-    catch { setCourses([]); }
+    try {
+      const [courseRes, userRes] = await Promise.all([
+        tenantAdminApi.getCourses(),
+        tenantAdminApi.getUsers(),
+      ]);
+      setCourses(courseRes.data.courses ?? courseRes.data ?? []);
+      setUsers(userRes.data.users ?? userRes.data ?? []);
+    } catch {
+      setCourses([]);
+      setUsers([]);
+    }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -252,8 +270,24 @@ function Courses() {
     e.preventDefault();
     setSaving(true);
     try {
-      if (editCourse) { await tenantAdminApi.updateCourse(editCourse.id as number, form); toast.success('Course updated'); }
-      else { await tenantAdminApi.createCourse(form); toast.success('Course created'); }
+      const payload = {
+        title: form.title,
+        description: form.description,
+        subject: form.subject,
+        faculty_id: form.facultyId ? Number(form.facultyId) : null,
+        status: form.status,
+        is_active: form.status === 'ACTIVE',
+      };
+      if (editCourse) {
+        await tenantAdminApi.updateCourse(editCourse.id as number, payload);
+        await tenantAdminApi.updateCourseEnrollments(editCourse.id as number, form.studentIds);
+        toast.success('Course updated');
+      } else {
+        const created = await tenantAdminApi.createCourse(payload);
+        const courseId = Number(created.data?.course?.id);
+        if (courseId) await tenantAdminApi.updateCourseEnrollments(courseId, form.studentIds);
+        toast.success('Course created');
+      }
       setModalOpen(false);
       load();
     } catch { toast.error('Failed to save course'); }
@@ -273,7 +307,7 @@ function Courses() {
         subtitle={`${courses.length} courses`}
         actions={
           hasPermission('COURSE_WRITE') && (
-            <Button onClick={() => { setEditCourse(null); setForm({ title: '', description: '', subject: '' }); setModalOpen(true); }}>
+            <Button onClick={() => { setEditCourse(null); setForm({ title: '', description: '', subject: '', facultyId: '', status: 'DRAFT', studentIds: [] }); setModalOpen(true); }}>
               + New Course
             </Button>
           )
@@ -290,21 +324,52 @@ function Courses() {
               background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)',
               borderRadius: '14px', padding: '20px',
             }}>
+              {(() => {
+                const status = String((course.settings as Record<string, unknown>)?.status ?? (course.is_active ? 'ACTIVE' : 'DRAFT')).toUpperCase();
+                const statusColor = status === 'ARCHIVED'
+                  ? 'var(--status-neutral)'
+                  : status === 'ACTIVE'
+                    ? 'var(--status-success)'
+                    : 'var(--status-warning)';
+                const statusBg = status === 'ARCHIVED'
+                  ? 'var(--status-neutral-soft)'
+                  : status === 'ACTIVE'
+                    ? 'var(--status-success-soft)'
+                    : 'var(--status-warning-soft)';
+                return (
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
                 <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)' }}>{String(course.title)}</h3>
-                <Badge color={course.is_active ? 'var(--status-success)' : 'var(--status-neutral)'}>{course.is_active ? 'Active' : 'Inactive'}</Badge>
+                <Badge color={statusColor} bg={statusBg}>
+                  {status}
+                </Badge>
               </div>
+                );
+              })()}
               {Boolean(course.description) && (
                 <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: '0 0 12px' }}>
                   {String(course.description).substring(0, 120)}{String(course.description).length > 120 ? '...' : ''}
                 </p>
               )}
               {Boolean(course.subject) && <Badge>{String(course.subject)}</Badge>}
+              {Boolean(course.faculty_email) && (
+                <p style={{ margin: '10px 0 0', color: 'var(--text-secondary)', fontSize: '13px' }}>Faculty: {String(course.faculty_email)}</p>
+              )}
+              <p style={{ margin: '6px 0 0', color: 'var(--text-muted)', fontSize: '12px' }}>
+                Enrollments: {Number(course.enrollment_count ?? 0)}
+              </p>
               {hasPermission('COURSE_WRITE') && (
                 <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
-                  <Button size="sm" variant="secondary" onClick={() => {
+                  <Button size="sm" variant="secondary" onClick={async () => {
+                    const enr = await tenantAdminApi.getCourseEnrollments(course.id as number).catch(() => ({ data: { student_ids: [] } }));
                     setEditCourse(course);
-                    setForm({ title: String(course.title ?? ''), description: String(course.description ?? ''), subject: String(course.subject ?? '') });
+                    setForm({
+                      title: String(course.title ?? ''),
+                      description: String(course.description ?? ''),
+                      subject: String(course.subject ?? ''),
+                      facultyId: String(course.faculty_id ?? ''),
+                      status: String((course.settings as Record<string, unknown>)?.status ?? (course.is_active ? 'ACTIVE' : 'DRAFT')).toUpperCase(),
+                      studentIds: (enr.data?.student_ids ?? []) as number[],
+                    });
                     setModalOpen(true);
                   }}>Edit</Button>
                   <Button size="sm" variant="danger" onClick={() => setDeleteTarget(course)}>Delete</Button>
@@ -319,6 +384,42 @@ function Courses() {
         <form onSubmit={handleSave}>
           <Field label="Title" required><Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required /></Field>
           <Field label="Subject"><Input value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder="e.g. Mathematics" /></Field>
+          <Field label="Assigned Faculty">
+            <Select value={form.facultyId} onChange={(e) => setForm({ ...form, facultyId: e.target.value })}>
+              <option value="">Unassigned</option>
+              {facultyUsers.map((f) => (
+                <option key={String(f.id)} value={String(f.id)}>{String(f.email)}</option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Status">
+            <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+              <option value="DRAFT">Draft</option>
+              <option value="ACTIVE">Active</option>
+              <option value="ARCHIVED">Archived</option>
+            </Select>
+          </Field>
+          <Field label="Enroll Students">
+            <div style={{ maxHeight: '170px', overflowY: 'auto', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '8px' }}>
+              {studentUsers.map((s) => {
+                const id = Number(s.id);
+                const checked = form.studentIds.includes(id);
+                return (
+                  <label key={id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', color: 'var(--text-primary)' }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => setForm((prev) => ({
+                        ...prev,
+                        studentIds: e.target.checked ? [...prev.studentIds, id] : prev.studentIds.filter((v) => v !== id),
+                      }))}
+                    />
+                    {String(s.email)}
+                  </label>
+                );
+              })}
+            </div>
+          </Field>
           <Field label="Description"><Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Course description..." /></Field>
           <div style={uiStyles.actionRowEndWithTop}>
             <Button variant="ghost" type="button" onClick={() => setModalOpen(false)}>Cancel</Button>
@@ -334,7 +435,7 @@ function Courses() {
 // ============================================================
 // Content / Ingestion
 // ============================================================
-function Content() {
+function Content({ embedded = false }: { embedded?: boolean }) {
   const [tab, setTab] = useState('documents');
   const [uploading, setUploading] = useState(false);
   const [ytUrl, setYtUrl] = useState('');
@@ -372,7 +473,7 @@ function Content() {
 
   return (
     <div>
-      <PageHeader title="Content" subtitle="Upload documents and add video content" />
+      {!embedded && <PageHeader title="Content" subtitle="Upload documents and add video content" />}
       <Tabs
         tabs={[{ key: 'documents', label: '📄 Documents' }, { key: 'youtube', label: '▶️ YouTube' }]}
         active={tab}
@@ -431,12 +532,27 @@ function AISettings() {
     retrieval_strategy: 'hybrid',
     vector_store: 'postgres',
   });
+  const [allowedOptions, setAllowedOptions] = useState<Record<string, string[]>>({
+    allowed_chunking_strategies: ['semantic'],
+    allowed_embedding_models: ['minilm'],
+    allowed_llm_providers: ['groq'],
+    allowed_retrieval_strategies: ['hybrid'],
+    allowed_vector_stores: ['postgres'],
+  });
+  const [policyRequired, setPolicyRequired] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     tenantAdminApi.getAISettings()
-      .then((r) => setSettings(r.data.settings ?? r.data))
+      .then((r) => {
+        const data = r.data ?? {};
+        const currentSettings = (data.settings ?? data) as Record<string, string>;
+        const policy = (data.allowed_options ?? {}) as Record<string, string[]>;
+        setSettings((prev) => ({ ...prev, ...currentSettings }));
+        setAllowedOptions((prev) => ({ ...prev, ...policy }));
+        setPolicyRequired(Boolean(data.policy_required));
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
@@ -455,47 +571,59 @@ function AISettings() {
 
   return (
     <div>
-      <PageHeader title="AI Settings" subtitle="Configure AI behavior for your institution" />
+      <PageHeader title="AI Configuration" subtitle="Select from Super Admin approved AI options" />
       <Card style={{ maxWidth: '600px' }}>
+        {policyRequired && (
+          <div style={{
+            marginBottom: '16px',
+            border: '1px solid var(--status-warning)',
+            background: 'var(--status-warning-soft)',
+            color: 'var(--text-primary)',
+            borderRadius: '10px',
+            padding: '10px 12px',
+            fontSize: '13px',
+          }}>
+            AI configuration is not enabled yet for your institution. Contact Super Admin.
+          </div>
+        )}
         <form onSubmit={handleSave}>
           <Field label="Chunking Strategy">
             <Select value={settings.chunking_strategy} onChange={(e) => setSettings({ ...settings, chunking_strategy: e.target.value })}>
-              <option value="semantic">Semantic</option>
-              <option value="fixed">Fixed Size</option>
-              <option value="paragraph">Paragraph</option>
+              {(allowedOptions.allowed_chunking_strategies ?? []).map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
             </Select>
           </Field>
           <Field label="Embedding Model">
             <Select value={settings.embedding_model} onChange={(e) => setSettings({ ...settings, embedding_model: e.target.value })}>
-              <option value="minilm">all-MiniLM-L6 (Fast, Local)</option>
-              <option value="openai">OpenAI text-embedding-3-small</option>
-              <option value="cohere">Cohere embed-multilingual</option>
+              {(allowedOptions.allowed_embedding_models ?? []).map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
             </Select>
           </Field>
           <Field label="LLM Provider">
             <Select value={settings.llm_provider} onChange={(e) => setSettings({ ...settings, llm_provider: e.target.value })}>
-              <option value="groq">Groq (Fast)</option>
-              <option value="openai">OpenAI GPT-4</option>
-              <option value="anthropic">Anthropic Claude</option>
-              <option value="ollama">Ollama (Self-hosted)</option>
+              {(allowedOptions.allowed_llm_providers ?? []).map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
             </Select>
           </Field>
           <Field label="Retrieval Strategy">
             <Select value={settings.retrieval_strategy} onChange={(e) => setSettings({ ...settings, retrieval_strategy: e.target.value })}>
-              <option value="hybrid">Hybrid (Semantic + Keyword)</option>
-              <option value="semantic">Semantic Only</option>
-              <option value="keyword">Keyword Only</option>
+              {(allowedOptions.allowed_retrieval_strategies ?? []).map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
             </Select>
           </Field>
           <Field label="Vector Store">
             <Select value={settings.vector_store} onChange={(e) => setSettings({ ...settings, vector_store: e.target.value })}>
-              <option value="postgres">PostgreSQL + pgvector</option>
-              <option value="pinecone">Pinecone</option>
-              <option value="chroma">ChromaDB</option>
+              {(allowedOptions.allowed_vector_stores ?? []).map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
             </Select>
           </Field>
           <div style={{ marginTop: '20px' }}>
-            <Button type="submit" loading={saving}>Save Settings</Button>
+            <Button type="submit" loading={saving} disabled={policyRequired}>Save Settings</Button>
           </div>
         </form>
       </Card>
@@ -654,8 +782,7 @@ export default function UniversityAdminPortal() {
         <Route index element={<Dashboard />} />
         <Route path="users" element={<UsersManagement />} />
         <Route path="courses" element={<Courses />} />
-        <Route path="content" element={<Content />} />
-        <Route path="ai-settings" element={<AISettings />} />
+        <Route path="content" element={<Navigate to="/university-admin/courses" replace />} />
         <Route path="connectors" element={<Connectors />} />
         <Route path="analytics" element={<Analytics />} />
         <Route path="audit-logs" element={<AuditLogs />} />

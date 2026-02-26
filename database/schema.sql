@@ -375,6 +375,17 @@ CREATE TABLE IF NOT EXISTS tenant_ai_settings (
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS tenant_ai_policies (
+    tenant_id INT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+    allowed_chunking_strategies TEXT[] NOT NULL DEFAULT ARRAY['semantic'],
+    allowed_embedding_models TEXT[] NOT NULL DEFAULT ARRAY['minilm'],
+    allowed_llm_providers TEXT[] NOT NULL DEFAULT ARRAY['groq'],
+    allowed_retrieval_strategies TEXT[] NOT NULL DEFAULT ARRAY['hybrid'],
+    allowed_vector_stores TEXT[] NOT NULL DEFAULT ARRAY['postgres'],
+    updated_by INT REFERENCES users(id),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
 -- ============================================================
 -- COMPATIBILITY MIGRATIONS (idempotent)
 -- ============================================================
@@ -395,6 +406,17 @@ ALTER TABLE tenant_ai_settings ADD COLUMN IF NOT EXISTS embedding_provider VARCH
 ALTER TABLE tenant_ai_settings ADD COLUMN IF NOT EXISTS rerank_enabled BOOLEAN DEFAULT false;
 ALTER TABLE tenant_ai_settings ADD COLUMN IF NOT EXISTS max_tokens INT;
 ALTER TABLE tenant_ai_settings ADD COLUMN IF NOT EXISTS temperature DECIMAL(3,2);
+
+CREATE TABLE IF NOT EXISTS tenant_ai_policies (
+    tenant_id INT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+    allowed_chunking_strategies TEXT[] NOT NULL DEFAULT ARRAY['semantic'],
+    allowed_embedding_models TEXT[] NOT NULL DEFAULT ARRAY['minilm'],
+    allowed_llm_providers TEXT[] NOT NULL DEFAULT ARRAY['groq'],
+    allowed_retrieval_strategies TEXT[] NOT NULL DEFAULT ARRAY['hybrid'],
+    allowed_vector_stores TEXT[] NOT NULL DEFAULT ARRAY['postgres'],
+    updated_by INT REFERENCES users(id),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
 
 -- ============================================================
 -- INDEXES
