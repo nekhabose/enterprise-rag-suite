@@ -147,3 +147,40 @@ export const studentApi = {
   getCourseFiles: (courseId: number, params?: Record<string, unknown>) =>
     api.get(`/student/courses/${courseId}/files`, { params }),
 };
+
+export const facultyApi = {
+  getDashboard: () => api.get('/faculty/dashboard'),
+  getCourses: () => api.get('/faculty/courses'),
+  getCalendar: () => api.get('/faculty/calendar'),
+  getInbox: (params?: Record<string, unknown>) => api.get('/faculty/inbox', { params }),
+  getHistory: () => api.get('/faculty/history'),
+  getCourseHome: (courseId: number) => api.get(`/faculty/courses/${courseId}/home`),
+  getCourseModules: (courseId: number) => api.get(`/faculty/courses/${courseId}/modules`),
+  createCourseModule: (courseId: number, data: Record<string, unknown>) => api.post(`/faculty/courses/${courseId}/modules`, data),
+  reorderCourseModules: (courseId: number, module_ids: number[]) => api.put(`/faculty/courses/${courseId}/modules/reorder`, { module_ids }),
+  toggleModulePublish: (courseId: number, moduleId: number) => api.put(`/faculty/courses/${courseId}/modules/${moduleId}/toggle-publish`),
+  createModuleItem: (courseId: number, moduleId: number, data: Record<string, unknown>) =>
+    api.post(`/faculty/courses/${courseId}/modules/${moduleId}/items`, data),
+  updateModuleItem: (courseId: number, moduleId: number, itemId: number, data: Record<string, unknown>) =>
+    api.put(`/faculty/courses/${courseId}/modules/${moduleId}/items/${itemId}`, data),
+  reorderModuleItems: (courseId: number, moduleId: number, item_ids: number[]) =>
+    api.put(`/faculty/courses/${courseId}/modules/${moduleId}/items/reorder`, { item_ids }),
+  getCourseFiles: (courseId: number) => api.get(`/faculty/courses/${courseId}/files`),
+  attachFileToModule: (courseId: number, data: Record<string, unknown>) => api.post(`/faculty/courses/${courseId}/files/attach`, data),
+  getCourseQuizzes: (courseId: number, params?: Record<string, unknown>) => api.get(`/faculty/courses/${courseId}/quizzes`, { params }),
+  createManualQuiz: (courseId: number, data: Record<string, unknown>) => api.post(`/faculty/courses/${courseId}/quizzes/manual`, data),
+  generateQuiz: (courseId: number, data: Record<string, unknown>) => api.post(`/faculty/courses/${courseId}/quizzes/generate`, data),
+  publishQuiz: (courseId: number, assessmentId: number, data: Record<string, unknown>) =>
+    api.put(`/faculty/courses/${courseId}/quizzes/${assessmentId}/publish`, data),
+  getAssignments: (courseId: number) => api.get(`/faculty/courses/${courseId}/assignments`),
+  createAssignment: (courseId: number, data: Record<string, unknown>) => api.post(`/faculty/courses/${courseId}/assignments`, data),
+  getAssignmentSubmissions: (courseId: number, assignmentId: number) => api.get(`/faculty/courses/${courseId}/assignments/${assignmentId}/submissions`),
+  gradeSubmission: (courseId: number, submissionId: number, data: Record<string, unknown>) =>
+    api.put(`/faculty/courses/${courseId}/assignments/submissions/${submissionId}/grade`, data),
+  getGradebook: (courseId: number) => api.get(`/faculty/courses/${courseId}/gradebook`),
+  getCourseThreads: (courseId: number) => api.get(`/faculty/courses/${courseId}/inbox/threads`),
+  createCourseThread: (courseId: number, data: Record<string, unknown>) => api.post(`/faculty/courses/${courseId}/inbox/threads`, data),
+  getThreadMessages: (courseId: number, threadId: number) => api.get(`/faculty/courses/${courseId}/inbox/threads/${threadId}`),
+  sendThreadMessage: (courseId: number, threadId: number, body: string) =>
+    api.post(`/faculty/courses/${courseId}/inbox/threads/${threadId}/messages`, { body }),
+};

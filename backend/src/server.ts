@@ -140,7 +140,15 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
 // ============================================================
 // MULTER - secure file upload
 // ============================================================
-const ALLOWED_MIME_TYPES = ['application/pdf'];
+const ALLOWED_MIME_TYPES = [
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain',
+  'text/markdown',
+  'text/csv',
+];
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
 
 const storage = multer.diskStorage({
@@ -158,7 +166,7 @@ const upload = multer({
     if (ALLOWED_MIME_TYPES.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Only PDF files are allowed'));
+      cb(new Error('Unsupported file type'));
     }
   },
 });
@@ -330,7 +338,7 @@ registerLegacyRoutes({
 // ============================================================
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   console.error('[ERROR]', err);
-  if (err.message === 'Only PDF files are allowed') {
+  if (err.message === 'Unsupported file type') {
     return res.status(400).json({ error: err.message });
   }
   res.status(500).json({ error: 'Internal server error' });
@@ -385,6 +393,85 @@ const ensureTables = async () => {
     ALTER TABLE audit_logs
       ADD COLUMN IF NOT EXISTS role VARCHAR(50),
       ADD COLUMN IF NOT EXISTS severity VARCHAR(10) DEFAULT 'info'
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS assessment_settings (
+      assessment_id INT PRIMARY KEY REFERENCES assessments(id) ON DELETE CASCADE,
+      course_id INT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+      due_at TIMESTAMP,
+      time_limit_minutes INT,
+      attempts_allowed INT DEFAULT 1,
+      is_published BOOLEAN DEFAULT false,
+      source_type VARCHAR(20) DEFAULT 'MANUAL',
+      needs_review BOOLEAN DEFAULT false,
+      provenance JSONB DEFAULT '{}',
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS assignments (
+      id SERIAL PRIMARY KEY,
+      course_id INT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      faculty_id INT NOT NULL REFERENCES users(id),
+      title VARCHAR(255) NOT NULL,
+      description TEXT,
+      rubric JSONB DEFAULT '{}',
+      due_at TIMESTAMP,
+      is_published BOOLEAN DEFAULT false,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS assignment_submissions (
+      id SERIAL PRIMARY KEY,
+      assignment_id INT NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+      student_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      submission_text TEXT,
+      submission_url TEXT,
+      status VARCHAR(20) DEFAULT 'submitted',
+      score DECIMAL(5,2),
+      feedback TEXT,
+      submitted_at TIMESTAMP DEFAULT NOW(),
+      graded_at TIMESTAMP,
+      UNIQUE(assignment_id, student_id)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS course_inbox_threads (
+      id SERIAL PRIMARY KEY,
+      course_id INT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+      tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      created_by INT NOT NULL REFERENCES users(id),
+      target_user_id INT REFERENCES users(id),
+      title VARCHAR(255) NOT NULL,
+      status VARCHAR(20) DEFAULT 'open',
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS course_inbox_messages (
+      id SERIAL PRIMARY KEY,
+      thread_id INT NOT NULL REFERENCES course_inbox_threads(id) ON DELETE CASCADE,
+      sender_id INT NOT NULL REFERENCES users(id),
+      body TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_assessment_settings_course ON assessment_settings(course_id);
+    CREATE INDEX IF NOT EXISTS idx_assignments_course ON assignments(course_id, due_at);
+    CREATE INDEX IF NOT EXISTS idx_assignment_submissions_assignment ON assignment_submissions(assignment_id, student_id);
+    CREATE INDEX IF NOT EXISTS idx_course_inbox_threads_course ON course_inbox_threads(course_id, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_course_inbox_messages_thread ON course_inbox_messages(thread_id, created_at);
   `);
 };
 

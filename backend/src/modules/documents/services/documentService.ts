@@ -16,6 +16,8 @@ export function createDocumentService(deps: LegacyRouteDeps) {
       const { provider, model, embedding_model, chunking_strategy, course_id, subject, year } = req.body;
 
       try {
+        const ext = deps.path.extname(req.file.originalname || '').replace('.', '').toLowerCase();
+        const fileType = ext || 'file';
         const normalizedCourseId = course_id ? Number(course_id) : null;
         if (req.userRole === ROLES.FACULTY) {
           if (!normalizedCourseId || !Number.isFinite(normalizedCourseId)) {
@@ -33,9 +35,9 @@ export function createDocumentService(deps: LegacyRouteDeps) {
         const absolutePath = path.resolve(req.file.path);
         const dbResult = await repo.query(
           `INSERT INTO documents (user_id, tenant_id, filename, file_path, file_type, file_size_bytes, subject, year, course_id)
-           VALUES ($1,$2,$3,$4,'pdf',$5,$6,$7,$8) RETURNING id`,
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
           [userId, tenantId, req.file.originalname, absolutePath,
-            req.file.size, subject ?? null, year ? parseInt(year) : null, normalizedCourseId],
+            fileType, req.file.size, subject ?? null, year ? parseInt(year) : null, normalizedCourseId],
         );
         const documentId = dbResult.rows[0].id;
 

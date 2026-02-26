@@ -12,6 +12,7 @@ import { registerSettingsRoutes } from '../../settings/routes/registerSettingsRo
 import { registerProxyRoutes } from '../../legacy/routes/registerProxyRoutes';
 import { registerPortalCompatRoutes } from '../../legacy/routes/registerPortalCompatRoutes';
 import { registerStudentExperienceRoutes } from '../../legacy/routes/registerStudentExperienceRoutes';
+import { registerFacultyExperienceRoutes } from '../../legacy/routes/registerFacultyExperienceRoutes';
 
 export function registerLegacyRoutes(deps: LegacyRouteDeps) {
   registerHealthRoutes(deps);
@@ -27,4 +28,5 @@ export function registerLegacyRoutes(deps: LegacyRouteDeps) {
   registerProxyRoutes(deps);
   registerPortalCompatRoutes(deps);
   registerStudentExperienceRoutes(deps);
+  registerFacultyExperienceRoutes(deps);
 }
