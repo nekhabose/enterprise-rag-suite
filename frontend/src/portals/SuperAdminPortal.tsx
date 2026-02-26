@@ -5,6 +5,7 @@ import {
   Modal, Field, Input, Select, Button, Badge, Table, StatCard,
   Confirm, Spinner, PageHeader, Card, Tabs, SearchInput,
 } from '../components/shared/UI';
+import { autoGrid, uiStyles } from '../shared/ui/styleHelpers';
 import { superAdminApi } from '../utils/api';
 import { useAuth } from '../hooks/useAuth';
 import toast from 'react-hot-toast';
@@ -34,13 +35,13 @@ function Dashboard() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <div style={{ display: 'flex', justifyContent: 'center', padding: '60px' }}><Spinner /></div>;
+  if (loading) return <div style={uiStyles.loadingCenter}><Spinner /></div>;
 
   const s = stats as Record<string, number>;
   return (
     <div>
       <PageHeader title="Super Admin Dashboard" subtitle="Platform-wide overview" />
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', marginBottom: '32px' }}>
+      <div style={autoGrid(200, true)}>
         <StatCard label="Total Universities" value={s.totalTenants ?? 0} icon="🏛️" />
         <StatCard label="Active Tenants" value={s.activeTenants ?? 0} icon="✅" />
         <StatCard label="Total Users" value={s.totalUsers ?? 0} icon="👥" />
@@ -49,7 +50,7 @@ function Dashboard() {
         <StatCard label="AI Chats" value={s.totalChats ?? 0} icon="💬" />
       </div>
       <Card>
-        <p style={{ color: 'rgba(255,255,255,0.6)', fontSize: '14px', margin: 0 }}>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '14px', margin: 0 }}>
           Welcome to the Super Admin portal. Use the navigation to manage universities, internal team members, view analytics, and audit platform activity.
         </p>
       </Card>
@@ -142,14 +143,14 @@ function Universities() {
         }
       />
 
-      <div style={{ display: 'flex', gap: '12px', marginBottom: '20px' }}>
+      <div style={uiStyles.searchRow}>
         <SearchInput value={search} onChange={setSearch} placeholder="Search universities..." />
       </div>
 
       {loading ? (
-        <div style={{ textAlign: 'center', padding: '60px' }}><Spinner /></div>
+        <div style={uiStyles.loadingCenterText}><Spinner /></div>
       ) : (
-        <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', overflow: 'hidden' }}>
+        <div style={uiStyles.surfaceTableShell}>
           <Table
             columns={[
               { key: 'name', label: 'Name' },
@@ -162,7 +163,7 @@ function Universities() {
             renderCell={(row, key) => {
               if (key === 'plan') return <Badge>{String(row.plan ?? '').toUpperCase()}</Badge>;
               if (key === 'is_active') return (
-                <Badge color={row.is_active ? '#34d399' : '#f87171'} bg={row.is_active ? 'rgba(52,211,153,0.1)' : 'rgba(248,113,113,0.1)'}>
+                <Badge color={row.is_active ? 'var(--status-success)' : 'var(--status-danger)'} bg={row.is_active ? 'var(--status-success-soft)' : 'var(--status-danger-soft)'}>
                   {row.is_active ? 'Active' : 'Inactive'}
                 </Badge>
               );
@@ -205,7 +206,7 @@ function Universities() {
           <Field label="Max Users">
             <Input type="number" value={form.maxUsers} onChange={(e) => setForm({ ...form, maxUsers: e.target.value })} min="1" />
           </Field>
-          <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '20px' }}>
+          <div style={uiStyles.actionRowEndWithTop}>
             <Button variant="ghost" type="button" onClick={() => setModalOpen(false)}>Cancel</Button>
             <Button type="submit" loading={saving}>{editTenant ? 'Update' : 'Create'}</Button>
           </div>
@@ -289,9 +290,9 @@ function InternalUsers() {
       />
 
       {loading ? (
-        <div style={{ textAlign: 'center', padding: '60px' }}><Spinner /></div>
+        <div style={uiStyles.loadingCenterText}><Spinner /></div>
       ) : (
-        <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', overflow: 'hidden' }}>
+        <div style={uiStyles.surfaceTableShell}>
           <Table
             columns={[
               { key: 'email', label: 'Email' },
@@ -305,7 +306,7 @@ function InternalUsers() {
               if (key === 'name') return `${row.first_name ?? ''} ${row.last_name ?? ''}`.trim() || '—';
               if (key === 'role') return <Badge>{String(row.role).replace(/_/g, ' ')}</Badge>;
               if (key === 'is_active') return (
-                <Badge color={row.is_active ? '#34d399' : '#f87171'} bg={row.is_active ? 'rgba(52,211,153,0.1)' : 'rgba(248,113,113,0.1)'}>
+                <Badge color={row.is_active ? 'var(--status-success)' : 'var(--status-danger)'} bg={row.is_active ? 'var(--status-success-soft)' : 'var(--status-danger-soft)'}>
                   {row.is_active ? 'Active' : 'Inactive'}
                 </Badge>
               );
@@ -348,7 +349,7 @@ function InternalUsers() {
               <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required />
             </Field>
           )}
-          <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '20px' }}>
+          <div style={uiStyles.actionRowEndWithTop}>
             <Button variant="ghost" type="button" onClick={() => setModalOpen(false)}>Cancel</Button>
             <Button type="submit" loading={saving}>{editUser ? 'Update' : 'Create'}</Button>
           </div>
@@ -409,9 +410,9 @@ function AuditLogs() {
     <div>
       <PageHeader title="Audit Logs" subtitle="Security events and platform actions" />
       {loading ? (
-        <div style={{ textAlign: 'center', padding: '60px' }}><Spinner /></div>
+        <div style={uiStyles.loadingCenterText}><Spinner /></div>
       ) : (
-        <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', overflow: 'hidden' }}>
+        <div style={uiStyles.surfaceTableShell}>
           <Table
             columns={[
               { key: 'created_at', label: 'Time' },
@@ -432,7 +433,7 @@ function AuditLogs() {
       )}
       <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
         <Button variant="ghost" size="sm" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}>← Prev</Button>
-        <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: '14px', alignSelf: 'center' }}>Page {page}</span>
+        <span style={{ color: 'var(--text-muted)', fontSize: '14px', alignSelf: 'center' }}>Page {page}</span>
         <Button variant="ghost" size="sm" onClick={() => setPage((p) => p + 1)} disabled={logs.length < 50}>Next →</Button>
       </div>
     </div>
@@ -449,7 +450,7 @@ export default function SuperAdminPortal() {
   }
 
   return (
-    <SidebarLayout navItems={NAV_ITEMS} title="EduLMS" subtitle="Super Admin" accentColor="#7c3aed">
+    <SidebarLayout navItems={NAV_ITEMS} title="EduLMS" subtitle="Super Admin" accentColor="var(--brand-600)">
       <Routes>
         <Route index element={<Dashboard />} />
         <Route path="universities" element={hasPermission('TENANT_READ') ? <Universities /> : <Navigate to="/super-admin" />} />

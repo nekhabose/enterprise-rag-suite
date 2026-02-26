@@ -5,6 +5,7 @@ import {
   Modal, Field, Input, Select, Button, Badge, Table, StatCard,
   Confirm, Spinner, PageHeader, Card, Tabs, SearchInput, Textarea,
 } from '../components/shared/UI';
+import { autoGrid, uiStyles } from '../shared/ui/styleHelpers';
 import { tenantAdminApi } from '../utils/api';
 import { useAuth } from '../hooks/useAuth';
 import toast from 'react-hot-toast';
@@ -35,7 +36,7 @@ function Dashboard() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <div style={{ display: 'flex', justifyContent: 'center', padding: '60px' }}><Spinner /></div>;
+  if (loading) return <div style={uiStyles.loadingCenter}><Spinner /></div>;
   const s = stats ?? {};
   const asNumber = (value: unknown): number => {
     if (typeof value === 'number') return value;
@@ -53,7 +54,7 @@ function Dashboard() {
   return (
     <div>
       <PageHeader title={`Welcome back`} subtitle="University Admin Dashboard" />
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', marginBottom: '32px' }}>
+      <div style={autoGrid(200, true)}>
         <StatCard label="Total Users" value={asNumber(s.users)} icon="👥" />
         <StatCard label="Courses" value={asNumber(s.courses)} icon="📚" />
         <StatCard label="Documents" value={asNumber(s.documents)} icon="📄" />
@@ -135,14 +136,14 @@ function UsersManagement() {
           )
         }
       />
-      <div style={{ display: 'flex', gap: '12px', marginBottom: '20px' }}>
+      <div style={uiStyles.searchRow}>
         <SearchInput value={search} onChange={setSearch} placeholder="Search users..." />
       </div>
 
       {loading ? (
-        <div style={{ textAlign: 'center', padding: '60px' }}><Spinner /></div>
+        <div style={uiStyles.loadingCenterText}><Spinner /></div>
       ) : (
-        <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', overflow: 'hidden' }}>
+        <div style={uiStyles.surfaceTableShell}>
           <Table
             columns={[
               { key: 'email', label: 'Email' },
@@ -156,15 +157,15 @@ function UsersManagement() {
               if (key === 'name') return `${row.first_name ?? ''} ${row.last_name ?? ''}`.trim() || '—';
               if (key === 'role') {
                 const roleColors: Record<string, { color: string; bg: string }> = {
-                  TENANT_ADMIN: { color: '#fcd34d', bg: 'rgba(252,211,77,0.1)' },
-                  FACULTY: { color: '#60a5fa', bg: 'rgba(96,165,250,0.1)' },
-                  STUDENT: { color: '#a78bfa', bg: 'rgba(167,139,250,0.1)' },
+                  TENANT_ADMIN: { color: 'var(--role-admin)', bg: 'var(--role-admin-soft)' },
+                  FACULTY: { color: 'var(--role-faculty)', bg: 'var(--role-faculty-soft)' },
+                  STUDENT: { color: 'var(--role-learner)', bg: 'var(--role-learner-soft)' },
                 };
-                const rc = roleColors[String(row.role)] ?? { color: '#c4b5fd', bg: 'rgba(124,58,237,0.15)' };
+                const rc = roleColors[String(row.role)] ?? { color: 'var(--role-learner)', bg: 'var(--role-learner-soft)' };
                 return <Badge color={rc.color} bg={rc.bg}>{String(row.role).replace(/_/g, ' ')}</Badge>;
               }
               if (key === 'is_active') return (
-                <Badge color={row.is_active ? '#34d399' : '#f87171'} bg={row.is_active ? 'rgba(52,211,153,0.1)' : 'rgba(248,113,113,0.1)'}>
+                <Badge color={row.is_active ? 'var(--status-success)' : 'var(--status-danger)'} bg={row.is_active ? 'var(--status-success-soft)' : 'var(--status-danger-soft)'}>
                   {row.is_active ? 'Active' : 'Inactive'}
                 </Badge>
               );
@@ -206,10 +207,10 @@ function UsersManagement() {
               <option value="TENANT_ADMIN">Admin</option>
             </Select>
           </Field>
-          <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.5)', margin: '0 0 20px' }}>
+          <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: '0 0 20px' }}>
             An invitation email will be sent to the user with instructions to set their password.
           </p>
-          <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+          <div style={uiStyles.actionRowEnd}>
             <Button variant="ghost" type="button" onClick={() => setInviteOpen(false)}>Cancel</Button>
             <Button type="submit" loading={saving}>Send Invitation</Button>
           </div>
@@ -279,26 +280,26 @@ function Courses() {
         }
       />
 
-      {loading ? <div style={{ textAlign: 'center', padding: '60px' }}><Spinner /></div> : (
+      {loading ? <div style={uiStyles.loadingCenterText}><Spinner /></div> : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
           {courses.length === 0 && (
-            <p style={{ color: 'rgba(255,255,255,0.4)', gridColumn: '1/-1' }}>No courses yet. Create your first course!</p>
+            <p style={{ color: 'var(--text-muted)', gridColumn: '1/-1' }}>No courses yet. Create your first course!</p>
           )}
           {courses.map((course) => (
             <div key={course.id as number} style={{
-              background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
+              background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)',
               borderRadius: '14px', padding: '20px',
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
-                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: '#fff' }}>{String(course.title)}</h3>
-                <Badge color={course.is_active ? '#34d399' : '#94a3b8'}>{course.is_active ? 'Active' : 'Inactive'}</Badge>
+                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)' }}>{String(course.title)}</h3>
+                <Badge color={course.is_active ? 'var(--status-success)' : 'var(--status-neutral)'}>{course.is_active ? 'Active' : 'Inactive'}</Badge>
               </div>
-              {course.description && (
-                <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.5)', margin: '0 0 12px' }}>
+              {Boolean(course.description) && (
+                <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: '0 0 12px' }}>
                   {String(course.description).substring(0, 120)}{String(course.description).length > 120 ? '...' : ''}
                 </p>
               )}
-              {course.subject && <Badge>{String(course.subject)}</Badge>}
+              {Boolean(course.subject) && <Badge>{String(course.subject)}</Badge>}
               {hasPermission('COURSE_WRITE') && (
                 <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
                   <Button size="sm" variant="secondary" onClick={() => {
@@ -319,7 +320,7 @@ function Courses() {
           <Field label="Title" required><Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required /></Field>
           <Field label="Subject"><Input value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder="e.g. Mathematics" /></Field>
           <Field label="Description"><Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Course description..." /></Field>
-          <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '20px' }}>
+          <div style={uiStyles.actionRowEndWithTop}>
             <Button variant="ghost" type="button" onClick={() => setModalOpen(false)}>Cancel</Button>
             <Button type="submit" loading={saving}>{editCourse ? 'Update' : 'Create'}</Button>
           </div>
@@ -380,17 +381,17 @@ function Content() {
 
       {tab === 'documents' && (
         <Card>
-          <h3 style={{ margin: '0 0 16px', fontSize: '16px', fontWeight: 600, color: '#fff' }}>Upload Document</h3>
-          <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: '13px', marginBottom: '20px' }}>
+          <h3 style={{ margin: '0 0 16px', fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)' }}>Upload Document</h3>
+          <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '20px' }}>
             Supported formats: PDF, DOCX, TXT, MD, CSV, PPTX, XLSX. Max 50MB.
           </p>
           <label style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-            padding: '40px', border: '2px dashed rgba(124,58,237,0.4)', borderRadius: '12px',
+            padding: '40px', border: '2px dashed color-mix(in srgb, var(--brand-600) 40%, transparent)', borderRadius: '12px',
             cursor: 'pointer', transition: 'border-color 0.15s',
           }}>
             <span style={{ fontSize: '36px', marginBottom: '12px' }}>📤</span>
-            <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: '14px', fontWeight: 500 }}>
+            <span style={{ color: 'var(--text-secondary)', fontSize: '14px', fontWeight: 500 }}>
               {uploading ? 'Uploading...' : 'Click to upload or drag & drop'}
             </span>
             <input type="file" accept=".pdf,.docx,.txt,.md,.csv,.pptx,.xlsx" onChange={handleFileUpload} style={{ display: 'none' }} disabled={uploading} />
@@ -400,8 +401,8 @@ function Content() {
 
       {tab === 'youtube' && (
         <Card>
-          <h3 style={{ margin: '0 0 16px', fontSize: '16px', fontWeight: 600, color: '#fff' }}>Add YouTube Video</h3>
-          <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: '13px', marginBottom: '20px' }}>
+          <h3 style={{ margin: '0 0 16px', fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)' }}>Add YouTube Video</h3>
+          <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '20px' }}>
             Enter a YouTube URL to extract transcripts and make them searchable.
           </p>
           <form onSubmit={handleYoutube}>
@@ -541,8 +542,8 @@ function Connectors() {
               <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
                 <span style={{ fontSize: '28px' }}>{c.icon}</span>
                 <div>
-                  <div style={{ fontWeight: 600, color: '#fff', marginBottom: '4px' }}>{c.label}</div>
-                  <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.5)' }}>{c.desc}</div>
+                  <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>{c.label}</div>
+                  <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>{c.desc}</div>
                 </div>
               </div>
               <button
@@ -550,7 +551,7 @@ function Connectors() {
                 disabled={saving === c.key}
                 style={{
                   width: '44px', height: '24px', borderRadius: '100px',
-                  background: connectors[c.key] ? 'linear-gradient(135deg, #7c3aed, #5b21b6)' : 'rgba(255,255,255,0.12)',
+                  background: connectors[c.key] ? 'linear-gradient(135deg, var(--brand-600), var(--brand-700))' : 'var(--border-strong)',
                   border: 'none', cursor: 'pointer', transition: 'background 0.2s', flexShrink: 0,
                   position: 'relative',
                 }}
@@ -559,13 +560,13 @@ function Connectors() {
                   position: 'absolute', top: '3px',
                   left: connectors[c.key] ? '23px' : '3px',
                   width: '18px', height: '18px',
-                  borderRadius: '50%', background: '#fff',
+                  borderRadius: '50%', background: 'var(--text-primary)',
                   transition: 'left 0.2s',
                 }} />
               </button>
             </div>
             <div style={{ marginTop: '12px' }}>
-              <Badge color={connectors[c.key] ? '#34d399' : '#94a3b8'} bg={connectors[c.key] ? 'rgba(52,211,153,0.1)' : 'rgba(255,255,255,0.05)'}>
+              <Badge color={connectors[c.key] ? 'var(--status-success)' : 'var(--status-neutral)'} bg={connectors[c.key] ? 'var(--status-success-soft)' : 'var(--status-neutral-soft)'}>
                 {connectors[c.key] ? 'Connected' : 'Disconnected'}
               </Badge>
             </div>
@@ -618,7 +619,7 @@ function AuditLogs() {
     <div>
       <PageHeader title="Audit Logs" subtitle="Security events for your institution" />
       {loading ? <Spinner /> : (
-        <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', overflow: 'hidden' }}>
+        <div style={uiStyles.surfaceTableShell}>
           <Table
             columns={[
               { key: 'created_at', label: 'Time' },
@@ -648,7 +649,7 @@ export default function UniversityAdminPortal() {
   if (!user || user.role !== 'TENANT_ADMIN') return <Navigate to="/login" replace />;
 
   return (
-    <SidebarLayout navItems={NAV_ITEMS} title="EduLMS" subtitle="University Admin" accentColor="#0ea5e9">
+    <SidebarLayout navItems={NAV_ITEMS} title="EduLMS" subtitle="University Admin" accentColor="var(--brand-600)">
       <Routes>
         <Route index element={<Dashboard />} />
         <Route path="users" element={<UsersManagement />} />

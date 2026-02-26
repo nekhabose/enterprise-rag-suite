@@ -39,8 +39,8 @@ export default function Login() {
         <div style={styles.logoRow}>
           <div style={styles.logoIcon}>
             <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-              <rect width="28" height="28" rx="8" fill="#1a1a2e"/>
-              <path d="M7 8h14M7 14h10M7 20h12" stroke="#7c3aed" strokeWidth="2.5" strokeLinecap="round"/>
+              <rect width="28" height="28" rx="8" fill="var(--brand-900)"/>
+              <path d="M7 8h14M7 14h10M7 20h12" stroke="var(--brand-600)" strokeWidth="2.5" strokeLinecap="round"/>
             </svg>
           </div>
           <span style={styles.logoText}>EduLMS</span>
@@ -89,10 +89,10 @@ export default function Login() {
         <div style={styles.hints}>
           <p style={styles.hintsTitle}>Demo accounts</p>
           {[
-            { label: 'Super Admin', email: 'superadmin@platform.local', pw: 'Admin@12345' },
-            { label: 'University Admin', email: 'admin@state.edu', pw: 'Admin@12345' },
-            { label: 'Faculty', email: 'faculty@state.edu', pw: 'Admin@12345' },
-            { label: 'Student', email: 'student@state.edu', pw: 'Admin@12345' },
+            { label: 'Super Admin', email: 'superadmin@platform.local', pw: 'SAdm!2026#T7kL' },
+            { label: 'University Admin', email: 'admin@state.edu', pw: 'TAdm!2026#P4qN' },
+            { label: 'Faculty', email: 'faculty@state.edu', pw: 'Fac!2026#R8mV' },
+            { label: 'Student', email: 'student@state.edu', pw: 'Stu!2026#W2xJ' },
           ].map(({ label, email: e, pw }) => (
             <button
               key={label}
@@ -115,13 +115,13 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: 'linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 50%, #16213e 100%)',
+    background: 'linear-gradient(160deg, var(--brand-50) 0%, var(--bg-canvas) 45%, var(--brand-100) 100%)',
     padding: '24px',
     fontFamily: "'DM Sans', sans-serif",
   },
   card: {
-    background: 'rgba(255,255,255,0.04)',
-    border: '1px solid rgba(255,255,255,0.1)',
+    background: 'var(--surface-card)',
+    border: '1px solid var(--border-default)',
     borderRadius: '20px',
     padding: '48px 40px',
     width: '100%',
@@ -142,26 +142,26 @@ const styles: Record<string, React.CSSProperties> = {
   logoText: {
     fontSize: '22px',
     fontWeight: 700,
-    color: '#fff',
+    color: 'var(--text-primary)',
     letterSpacing: '-0.5px',
   },
   title: {
     fontSize: '28px',
     fontWeight: 700,
-    color: '#fff',
+    color: 'var(--text-primary)',
     margin: '0 0 8px',
     letterSpacing: '-0.5px',
   },
   subtitle: {
     fontSize: '15px',
-    color: 'rgba(255,255,255,0.5)',
+    color: 'var(--text-secondary)',
     margin: '0 0 28px',
   },
   errorBanner: {
-    background: 'rgba(239,68,68,0.15)',
-    border: '1px solid rgba(239,68,68,0.3)',
+    background: 'var(--status-danger-soft)',
+    border: '1px solid color-mix(in srgb, var(--status-danger) 28%, transparent)',
     borderRadius: '8px',
-    color: '#fca5a5',
+    color: 'var(--status-danger)',
     padding: '12px 16px',
     fontSize: '14px',
     marginBottom: '20px',
@@ -177,26 +177,26 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '8px',
     fontSize: '13px',
     fontWeight: 500,
-    color: 'rgba(255,255,255,0.7)',
+    color: 'var(--text-secondary)',
     letterSpacing: '0.3px',
     textTransform: 'uppercase',
   },
   input: {
-    background: 'rgba(255,255,255,0.06)',
-    border: '1px solid rgba(255,255,255,0.12)',
+    background: 'var(--surface-subtle)',
+    border: '1px solid var(--border-default)',
     borderRadius: '10px',
     padding: '12px 16px',
-    color: '#fff',
+    color: 'var(--text-primary)',
     fontSize: '15px',
     outline: 'none',
     transition: 'border-color 0.15s',
     fontFamily: "'DM Sans', sans-serif",
   },
   button: {
-    background: 'linear-gradient(135deg, #7c3aed, #5b21b6)',
+    background: 'linear-gradient(135deg, var(--brand-500), var(--brand-600))',
     border: 'none',
     borderRadius: '10px',
-    color: '#fff',
+    color: 'var(--text-inverse)',
     fontSize: '15px',
     fontWeight: 600,
     padding: '14px',
@@ -207,16 +207,16 @@ const styles: Record<string, React.CSSProperties> = {
   hints: {
     marginTop: '32px',
     padding: '20px',
-    background: 'rgba(255,255,255,0.03)',
+    background: 'var(--surface-subtle)',
     borderRadius: '12px',
-    border: '1px solid rgba(255,255,255,0.07)',
+    border: '1px solid var(--border-default)',
   },
   hintsTitle: {
     fontSize: '11px',
     fontWeight: 600,
     letterSpacing: '0.8px',
     textTransform: 'uppercase',
-    color: 'rgba(255,255,255,0.35)',
+    color: 'var(--text-secondary)',
     margin: '0 0 12px',
   },
   hintButton: {
@@ -224,9 +224,9 @@ const styles: Record<string, React.CSSProperties> = {
     margin: '4px',
     padding: '6px 14px',
     borderRadius: '100px',
-    border: '1px solid rgba(124,58,237,0.4)',
-    background: 'rgba(124,58,237,0.1)',
-    color: '#c4b5fd',
+    border: '1px solid color-mix(in srgb, var(--brand-600) 40%, transparent)',
+    background: 'var(--brand-soft)',
+    color: 'var(--brand-700)',
     fontSize: '13px',
     cursor: 'pointer',
     fontFamily: "'DM Sans', sans-serif",

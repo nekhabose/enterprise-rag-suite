@@ -1,0 +1,48 @@
+export const ROLES = {
+  SUPER_ADMIN: 'SUPER_ADMIN',
+  INTERNAL_ADMIN: 'INTERNAL_ADMIN',
+  INTERNAL_STAFF: 'INTERNAL_STAFF',
+  TENANT_ADMIN: 'TENANT_ADMIN',
+  FACULTY: 'FACULTY',
+  STUDENT: 'STUDENT',
+} as const;
+
+export type Role = typeof ROLES[keyof typeof ROLES];
+
+export const ROLE_PERMISSIONS: Record<string, string[]> = {
+  SUPER_ADMIN: ['*'],
+  INTERNAL_ADMIN: [
+    'PLATFORM_READ', 'TENANT_READ', 'INTERNAL_USER_READ', 'INTERNAL_USER_WRITE',
+    'GLOBAL_ANALYTICS', 'GLOBAL_ANALYTICS_READ', 'AUDIT_LOG_READ', 'TENANT_USER_READ', 'COURSE_READ',
+    'KB_READ', 'DOCUMENT_READ', 'VIDEO_READ', 'ASSESSMENT_READ',
+  ],
+  INTERNAL_STAFF: [
+    'PLATFORM_READ', 'TENANT_READ', 'TENANT_USER_READ',
+    'COURSE_READ', 'KB_READ', 'DOCUMENT_READ', 'VIDEO_READ',
+  ],
+  TENANT_ADMIN: [
+    'TENANT_USER_READ', 'TENANT_USER_WRITE', 'COURSE_READ', 'COURSE_WRITE',
+    'KB_READ', 'KB_WRITE', 'CONNECTOR_CONFIGURE', 'AI_SETTINGS_UPDATE',
+    'DOCUMENT_READ', 'DOCUMENT_WRITE', 'DOCUMENT_DELETE',
+    'VIDEO_READ', 'VIDEO_WRITE', 'VIDEO_DELETE',
+    'ASSESSMENT_READ', 'ASSESSMENT_WRITE', 'CHAT_USE',
+    'AUDIT_LOG_READ', 'STUDENT_ANALYTICS', 'TENANT_ANALYTICS_READ',
+  ],
+  FACULTY: [
+    'COURSE_READ', 'COURSE_WRITE', 'KB_READ', 'KB_WRITE',
+    'DOCUMENT_READ', 'DOCUMENT_WRITE', 'VIDEO_READ', 'VIDEO_WRITE',
+    'ASSESSMENT_READ', 'ASSESSMENT_WRITE', 'CHAT_USE', 'STUDENT_ANALYTICS', 'STUDENT_PROGRESS_READ',
+  ],
+  STUDENT: ['COURSE_READ', 'DOCUMENT_READ', 'VIDEO_READ', 'ASSESSMENT_READ', 'CHAT_USE'],
+};
+
+export const GLOBAL_ROLES: Role[] = [ROLES.SUPER_ADMIN, ROLES.INTERNAL_ADMIN, ROLES.INTERNAL_STAFF];
+
+export const isGlobalRole = (role: string): boolean => GLOBAL_ROLES.includes(role as Role);
+
+export const rolePermissions = (role: string): string[] => ROLE_PERMISSIONS[role] ?? ROLE_PERMISSIONS.STUDENT;
+
+export const hasPermission = (role: string, permission: string): boolean => {
+  const permissions = rolePermissions(role);
+  return permissions.includes('*') || permissions.includes(permission);
+};

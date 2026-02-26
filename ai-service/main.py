@@ -14,6 +14,8 @@ from slowapi.errors import RateLimitExceeded
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from dotenv import load_dotenv
+from src.rag.orchestration.factory import build_rag_engine
+from src.rag.embedding.adapters import FactoryEmbedder
 
 load_dotenv()
 
@@ -35,6 +37,7 @@ structlog.configure(
     ]
 )
 log = structlog.get_logger()
+rag_engine = build_rag_engine()
 
 # ============================================================
 # APP
@@ -129,13 +132,13 @@ async def chat(
         conversation_id=body.conversation_id,
     )
 
-    # TODO: Integrate with actual LLM (Groq/OpenAI)
-    # For now returns a structured placeholder response
+    rag_result = rag_engine.answer(body.tenant_id, body.message)
+
     return {
-        "response": f"[AI] Processing your question: '{body.message[:100]}...' (LLM integration pending)",
+        "response": rag_result["response"],
         "conversation_id": body.conversation_id or 1,
-        "sources": [],
-        "tokens_used": 0,
+        "sources": rag_result["sources"],
+        "tokens_used": len(body.message.split()),
     }
 
 
@@ -184,12 +187,15 @@ async def ingest_upload(
         ext=ext,
     )
 
-    # TODO: Process file, chunk, embed, store in pgvector
+    decoded_text = content.decode("utf-8", errors="ignore")
+    ingest_result = rag_engine.ingest(tenant_id, file.filename or "upload", decoded_text)
+
     return {
         "status": "queued",
         "document_id": None,
         "filename": file.filename,
-        "message": "Document queued for processing",
+        "chunks": ingest_result["chunks"],
+        "message": "Document processed and indexed",
     }
 
 
@@ -208,9 +214,11 @@ async def ingest_youtube(
 
     log.info("youtube_ingest", user_id=user.id, tenant_id=body.tenant_id, url=body.source_url)
 
+    ingest_result = rag_engine.ingest(body.tenant_id, body.source_url or "youtube", f"Transcript placeholder: {body.source_url}")
     return {
         "status": "queued",
         "video_id": None,
+        "chunks": ingest_result["chunks"],
         "message": "YouTube video queued for transcript extraction and embedding",
     }
 
@@ -272,11 +280,12 @@ async def create_embeddings(
     if not tenant_scoped(user, body.tenant_id):
         raise HTTPException(status_code=403, detail="Tenant access denied")
 
-    # TODO: Use sentence-transformers to generate embeddings
+    embedder = FactoryEmbedder(provider="sentence_transformer")
+    embeddings = embedder.embed(body.texts)
     return {
-        "embeddings": [[0.0] * 384 for _ in body.texts],  # placeholder
-        "model": "all-MiniLM-L6-v2",
-        "dimensions": 384,
+        "embeddings": embeddings,
+        "model": getattr(embedder._impl, "model_name", "unknown"),
+        "dimensions": len(embeddings[0]) if embeddings else 0,
     }
 
 

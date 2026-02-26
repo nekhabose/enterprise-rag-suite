@@ -22,7 +22,7 @@ export default function SidebarLayout({
   navItems,
   title,
   subtitle,
-  accentColor = '#7c3aed',
+  accentColor = 'var(--teal-600)',
   children,
 }: SidebarLayoutProps) {
   const { user, logout, hasPermission } = useAuth();
@@ -73,7 +73,7 @@ export default function SidebarLayout({
               to={item.path}
               style={({ isActive }) => ({
                 ...styles.navItem,
-                ...(isActive ? { ...styles.navItemActive, background: `${accentColor}22`, color: '#fff' } : {}),
+                ...(isActive ? { ...styles.navItemActive, background: 'var(--brand-soft-strong)', color: 'var(--text-inverse)' } : {}),
               })}
             >
               <span style={styles.navIcon}>{item.icon}</span>
@@ -114,16 +114,16 @@ const styles: Record<string, React.CSSProperties> = {
   root: {
     display: 'flex',
     height: '100vh',
-    background: '#0f0f1a',
+    background: 'var(--surface-bg)',
     fontFamily: "'DM Sans', sans-serif",
-    color: '#fff',
+    color: 'var(--text-primary)',
     overflow: 'hidden',
   },
   sidebar: {
     width: '240px',
     minWidth: '240px',
-    background: 'rgba(255,255,255,0.03)',
-    borderRight: '1px solid rgba(255,255,255,0.07)',
+    background: 'linear-gradient(180deg, var(--brand-700), var(--brand-600))',
+    borderRight: '1px solid var(--sidebar-border)',
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
@@ -133,7 +133,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: '12px',
     padding: '24px 20px',
-    borderBottom: '1px solid rgba(255,255,255,0.07)',
+    borderBottom: '1px solid var(--sidebar-border)',
   },
   brandDot: {
     width: '10px',
@@ -144,21 +144,21 @@ const styles: Record<string, React.CSSProperties> = {
   brandTitle: {
     fontSize: '14px',
     fontWeight: 700,
-    color: '#fff',
+    color: 'var(--text-inverse)',
     lineHeight: 1.2,
   },
   brandSubtitle: {
     fontSize: '11px',
-    color: 'rgba(255,255,255,0.4)',
+    color: 'var(--sidebar-text-muted)',
     marginTop: '2px',
   },
   impersonationBanner: {
     margin: '12px 16px 0',
     padding: '8px 12px',
     borderRadius: '8px',
-    background: 'rgba(245,158,11,0.1)',
+    background: 'var(--status-warning-soft)',
     border: '1px solid',
-    color: '#fcd34d',
+    color: 'var(--status-warning)',
     fontSize: '12px',
     fontWeight: 600,
   },
@@ -176,14 +176,14 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '10px',
     padding: '9px 12px',
     borderRadius: '8px',
-    color: 'rgba(255,255,255,0.55)',
+    color: 'var(--sidebar-text-soft)',
     textDecoration: 'none',
     fontSize: '14px',
     fontWeight: 500,
     transition: 'all 0.15s',
   } as React.CSSProperties,
   navItemActive: {
-    color: '#fff',
+    color: 'var(--text-inverse)',
   },
   navIcon: {
     fontSize: '16px',
@@ -195,13 +195,13 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: '10px',
     padding: '16px 16px',
-    borderTop: '1px solid rgba(255,255,255,0.07)',
+    borderTop: '1px solid var(--sidebar-border-subtle)',
   },
   avatar: {
     width: '34px',
     height: '34px',
     borderRadius: '50%',
-    background: 'linear-gradient(135deg, #7c3aed, #5b21b6)',
+    background: 'linear-gradient(135deg, var(--brand-500), var(--brand-600))',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -212,14 +212,14 @@ const styles: Record<string, React.CSSProperties> = {
   userName: {
     fontSize: '13px',
     fontWeight: 600,
-    color: '#fff',
+    color: 'var(--text-inverse)',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap' as const,
   },
   userRole: {
     fontSize: '11px',
-    color: 'rgba(255,255,255,0.4)',
+    color: 'var(--sidebar-text-muted)',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap' as const,
@@ -227,7 +227,7 @@ const styles: Record<string, React.CSSProperties> = {
   logoutBtn: {
     background: 'none',
     border: 'none',
-    color: 'rgba(255,255,255,0.3)',
+    color: 'var(--sidebar-text-dim)',
     cursor: 'pointer',
     fontSize: '16px',
     padding: '4px',

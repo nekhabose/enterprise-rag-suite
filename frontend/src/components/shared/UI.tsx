@@ -28,22 +28,22 @@ export function Modal({ open, onClose, title, children, width = 480 }: ModalProp
 
 const modalStyles: Record<string, React.CSSProperties> = {
   overlay: {
-    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+    position: 'fixed', inset: 0, background: 'var(--overlay-soft)',
     backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center',
     justifyContent: 'center', zIndex: 1000, padding: '24px',
   },
   dialog: {
-    background: '#1e1e2e', border: '1px solid rgba(255,255,255,0.1)',
+    background: 'var(--surface-card)', border: '1px solid var(--border-subtle)',
     borderRadius: '16px', width: '100%', maxHeight: '90vh',
     overflow: 'hidden', display: 'flex', flexDirection: 'column',
   },
   header: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    padding: '20px 24px', borderBottom: '1px solid rgba(255,255,255,0.08)',
+    padding: '20px 24px', borderBottom: '1px solid var(--border-subtle)',
   },
-  title: { margin: 0, fontSize: '18px', fontWeight: 600, color: '#fff' },
+  title: { margin: 0, fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' },
   closeBtn: {
-    background: 'none', border: 'none', color: 'rgba(255,255,255,0.5)',
+    background: 'none', border: 'none', color: 'var(--text-secondary)',
     fontSize: '18px', cursor: 'pointer', padding: '4px 8px',
   },
   body: { padding: '24px', overflowY: 'auto', flex: 1 },
@@ -63,12 +63,12 @@ export function Field({ label, required, children, error }: FieldProps) {
     <div style={{ marginBottom: '16px' }}>
       <label style={{
         display: 'block', fontSize: '12px', fontWeight: 600, letterSpacing: '0.5px',
-        textTransform: 'uppercase', color: 'rgba(255,255,255,0.6)', marginBottom: '8px',
+        textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: '8px',
       }}>
-        {label}{required && <span style={{ color: '#f87171', marginLeft: '4px' }}>*</span>}
+        {label}{required && <span style={{ color: 'var(--status-danger)', marginLeft: '4px' }}>*</span>}
       </label>
       {children}
-      {error && <p style={{ color: '#f87171', fontSize: '12px', margin: '6px 0 0' }}>{error}</p>}
+      {error && <p style={{ color: 'var(--status-danger)', fontSize: '12px', margin: '6px 0 0' }}>{error}</p>}
     </div>
   );
 }
@@ -78,8 +78,8 @@ export function Field({ label, required, children, error }: FieldProps) {
 // ============================================================
 export const inputStyle: React.CSSProperties = {
   width: '100%', boxSizing: 'border-box',
-  background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)',
-  borderRadius: '8px', padding: '10px 14px', color: '#fff', fontSize: '14px',
+    background: 'var(--surface-subtle)', border: '1px solid var(--border-subtle)',
+  borderRadius: '8px', padding: '10px 14px', color: 'var(--text-primary)', fontSize: '14px',
   outline: 'none', fontFamily: "'DM Sans', sans-serif",
 };
 
@@ -116,10 +116,10 @@ export function Button({ variant = 'primary', size = 'md', loading, children, di
     fontSize: size === 'sm' ? '13px' : '14px',
   };
   const variants: Record<string, React.CSSProperties> = {
-    primary: { background: 'linear-gradient(135deg, #7c3aed, #5b21b6)', color: '#fff' },
-    secondary: { background: 'rgba(255,255,255,0.08)', color: '#e2e8f0', border: '1px solid rgba(255,255,255,0.12)' },
-    danger: { background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.3)' },
-    ghost: { background: 'none', color: 'rgba(255,255,255,0.6)', border: '1px solid rgba(255,255,255,0.1)' },
+    primary: { background: 'linear-gradient(135deg, var(--teal-500), var(--teal-700))', color: 'var(--text-inverse)' },
+    secondary: { background: 'var(--surface-subtle)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' },
+    danger: { background: 'var(--status-danger-soft)', color: 'var(--status-danger)', border: '1px solid color-mix(in srgb, var(--status-danger) 25%, transparent)' },
+    ghost: { background: 'none', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' },
   };
   return (
     <button disabled={disabled || loading} style={{ ...base, ...variants[variant], ...style }} {...props}>
@@ -131,12 +131,12 @@ export function Button({ variant = 'primary', size = 'md', loading, children, di
 // ============================================================
 // Badge
 // ============================================================
-interface BadgeProps { children: React.ReactNode; color?: string; bg?: string; }
-export function Badge({ children, color = '#c4b5fd', bg = 'rgba(124,58,237,0.15)' }: BadgeProps) {
+interface BadgeProps { children: React.ReactNode; color?: string; bg?: string; style?: React.CSSProperties; }
+export function Badge({ children, color = 'var(--teal-700)', bg = 'var(--brand-soft)', style }: BadgeProps) {
   return (
     <span style={{
       display: 'inline-block', padding: '3px 10px', borderRadius: '100px',
-      fontSize: '12px', fontWeight: 600, color, background: bg, letterSpacing: '0.3px',
+      fontSize: '12px', fontWeight: 600, color, background: bg, letterSpacing: '0.3px', ...style,
     }}>{children}</span>
   );
 }
@@ -159,8 +159,8 @@ export function Table({ columns, data, renderCell, emptyText = 'No data' }: Tabl
             {columns.map((col) => (
               <th key={col.key} style={{
                 padding: '10px 16px', textAlign: 'left', fontSize: '11px', fontWeight: 700,
-                letterSpacing: '0.7px', textTransform: 'uppercase', color: 'rgba(255,255,255,0.4)',
-                borderBottom: '1px solid rgba(255,255,255,0.08)', width: col.width,
+                letterSpacing: '0.7px', textTransform: 'uppercase', color: 'var(--text-secondary)',
+                borderBottom: '1px solid var(--border-default)', width: col.width,
               }}>{col.label}</th>
             ))}
           </tr>
@@ -169,14 +169,14 @@ export function Table({ columns, data, renderCell, emptyText = 'No data' }: Tabl
           {data.length === 0 ? (
             <tr>
               <td colSpan={columns.length} style={{
-                padding: '40px', textAlign: 'center', color: 'rgba(255,255,255,0.3)',
+                padding: '40px', textAlign: 'center', color: 'var(--text-secondary)',
               }}>{emptyText}</td>
             </tr>
           ) : (
             data.map((row, i) => (
-              <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+              <tr key={i} style={{ borderBottom: '1px solid var(--border-default)' }}>
                 {columns.map((col) => (
-                  <td key={col.key} style={{ padding: '12px 16px', color: 'rgba(255,255,255,0.85)' }}>
+                  <td key={col.key} style={{ padding: '12px 16px', color: 'var(--text-primary)' }}>
                     {renderCell ? renderCell(row, col.key) : String(row[col.key] ?? '')}
                   </td>
                 ))}
@@ -196,13 +196,13 @@ interface StatCardProps { label: string; value: string | number; icon?: string; 
 export function StatCard({ label, value, icon, delta }: StatCardProps) {
   return (
     <div style={{
-      background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
+      background: 'var(--surface-card)', border: '1px solid var(--border-subtle)',
       borderRadius: '14px', padding: '24px 20px',
     }}>
       {icon && <div style={{ fontSize: '24px', marginBottom: '12px' }}>{icon}</div>}
-      <div style={{ fontSize: '30px', fontWeight: 700, color: '#fff', marginBottom: '4px' }}>{value}</div>
-      <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.5)' }}>{label}</div>
-      {delta && <div style={{ fontSize: '12px', color: '#34d399', marginTop: '8px' }}>{delta}</div>}
+      <div style={{ fontSize: '30px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '4px' }}>{value}</div>
+      <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{label}</div>
+      {delta && <div style={{ fontSize: '12px', color: 'var(--status-success)', marginTop: '8px' }}>{delta}</div>}
     </div>
   );
 }
@@ -221,11 +221,11 @@ interface ConfirmProps {
 export function Confirm({ open, message, onConfirm, onCancel, confirmLabel = 'Confirm', variant = 'danger' }: ConfirmProps) {
   if (!open) return null;
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex',
+    <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay-strong)', display: 'flex',
       alignItems: 'center', justifyContent: 'center', zIndex: 2000 }}>
-      <div style={{ background: '#1e1e2e', border: '1px solid rgba(255,255,255,0.1)',
+      <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)',
         borderRadius: '14px', padding: '28px', maxWidth: '380px', width: '100%', margin: '16px' }}>
-        <p style={{ color: 'rgba(255,255,255,0.85)', fontSize: '15px', margin: '0 0 20px' }}>{message}</p>
+        <p style={{ color: 'var(--text-primary)', fontSize: '15px', margin: '0 0 20px' }}>{message}</p>
         <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
           <Button variant="ghost" onClick={onCancel}>Cancel</Button>
           <Button variant={variant === 'danger' ? 'danger' : 'primary'} onClick={onConfirm}>{confirmLabel}</Button>
@@ -242,10 +242,10 @@ export function Spinner({ size = 32 }: { size?: number }) {
   return (
     <div style={{
       width: size, height: size,
-      border: `3px solid rgba(124,58,237,0.2)`,
-      borderTopColor: '#7c3aed',
+      border: '3px solid var(--brand-soft-strong)',
+      borderTopColor: 'var(--teal-600)',
       borderRadius: '50%',
-      animation: 'spin 0.7s linear infinite',
+      
     }} />
   );
 }
@@ -260,8 +260,8 @@ export function PageHeader({ title, subtitle, actions }: {
     <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
       marginBottom: '28px', flexWrap: 'wrap', gap: '16px' }}>
       <div>
-        <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 700, color: '#fff' }}>{title}</h1>
-        {subtitle && <p style={{ margin: '6px 0 0', fontSize: '14px', color: 'rgba(255,255,255,0.5)' }}>{subtitle}</p>}
+        <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)' }}>{title}</h1>
+        {subtitle && <p style={{ margin: '6px 0 0', fontSize: '14px', color: 'var(--text-secondary)' }}>{subtitle}</p>}
       </div>
       {actions && <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>{actions}</div>}
     </div>
@@ -274,7 +274,7 @@ export function PageHeader({ title, subtitle, actions }: {
 export function Card({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
   return (
     <div style={{
-      background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
+      background: 'var(--surface-card)', border: '1px solid var(--border-subtle)',
       borderRadius: '14px', padding: '24px', ...style,
     }}>{children}</div>
   );
@@ -290,14 +290,14 @@ interface TabsProps {
 }
 export function Tabs({ tabs, active, onChange }: TabsProps) {
   return (
-    <div style={{ display: 'flex', gap: '4px', background: 'rgba(255,255,255,0.04)',
-      padding: '4px', borderRadius: '10px', width: 'fit-content', marginBottom: '24px' }}>
+    <div style={{ display: 'flex', gap: '4px', background: 'var(--bg-elevated)',
+      padding: '4px', borderRadius: '10px', width: 'fit-content', marginBottom: '24px', border: '1px solid var(--border-subtle)' }}>
       {tabs.map((tab) => (
         <button key={tab.key} onClick={() => onChange(tab.key)} style={{
           padding: '8px 18px', borderRadius: '8px', border: 'none', cursor: 'pointer',
           fontSize: '13px', fontWeight: 600, transition: 'all 0.15s',
-          background: active === tab.key ? 'rgba(124,58,237,0.8)' : 'none',
-          color: active === tab.key ? '#fff' : 'rgba(255,255,255,0.5)',
+          background: active === tab.key ? 'var(--teal-600)' : 'transparent',
+          color: active === tab.key ? 'var(--text-inverse)' : 'var(--text-secondary)',
           fontFamily: "'DM Sans', sans-serif",
         }}>{tab.label}</button>
       ))}
@@ -314,7 +314,7 @@ export function SearchInput({ value, onChange, placeholder = 'Search...' }: {
   return (
     <div style={{ position: 'relative', flex: 1, minWidth: '200px' }}>
       <span style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)',
-        color: 'rgba(255,255,255,0.3)', fontSize: '14px' }}>🔍</span>
+        color: 'var(--text-muted)', fontSize: '14px' }}>🔍</span>
       <input
         value={value}
         onChange={(e) => onChange(e.target.value)}

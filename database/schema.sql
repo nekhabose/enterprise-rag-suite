@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS tenants (
     plan VARCHAR(50) DEFAULT 'free',
     max_users INT DEFAULT 50,
     max_storage_gb INT DEFAULT 10,
+    contact_email VARCHAR(255),
     features JSONB DEFAULT '{}',
     settings JSONB DEFAULT '{}',
     is_active BOOLEAN DEFAULT true,
@@ -49,6 +50,9 @@ CREATE TABLE IF NOT EXISTS users (
     is_email_verified BOOLEAN DEFAULT false,
     last_login_at TIMESTAMP,
     metadata JSONB DEFAULT '{}',
+    is_internal BOOLEAN DEFAULT false,
+    employee_type VARCHAR(50),
+    supported_tenant_ids INT[] DEFAULT '{}',
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -222,6 +226,7 @@ CREATE TABLE IF NOT EXISTS courses (
     id SERIAL PRIMARY KEY,
     tenant_id INT NOT NULL REFERENCES tenants(id),
     created_by INT REFERENCES users(id),
+    faculty_id INT REFERENCES users(id),
     title VARCHAR(255) NOT NULL,
     description TEXT,
     subject VARCHAR(100),
@@ -342,6 +347,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     ip_address VARCHAR(50),
     user_agent TEXT,
     details JSONB,
+    role VARCHAR(50),
+    severity VARCHAR(20) DEFAULT 'info',
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -354,14 +361,40 @@ CREATE TABLE IF NOT EXISTS user_settings (
 CREATE TABLE IF NOT EXISTS tenant_ai_settings (
     tenant_id INT PRIMARY KEY REFERENCES tenants(id),
     chunking_strategy VARCHAR(100) DEFAULT 'semantic',
+    llm_model VARCHAR(100),
+    embedding_provider VARCHAR(100),
     embedding_model VARCHAR(100) DEFAULT 'minilm',
     llm_provider VARCHAR(100) DEFAULT 'groq',
     retrieval_strategy VARCHAR(50) DEFAULT 'hybrid',
     vector_store VARCHAR(50) DEFAULT 'postgres',
+    rerank_enabled BOOLEAN DEFAULT false,
+    max_tokens INT,
+    temperature DECIMAL(3,2),
     pdf_mode VARCHAR(50) DEFAULT 'standard',
     settings JSONB DEFAULT '{}',
     updated_at TIMESTAMP DEFAULT NOW()
 );
+
+-- ============================================================
+-- COMPATIBILITY MIGRATIONS (idempotent)
+-- ============================================================
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS contact_email VARCHAR(255);
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_internal BOOLEAN DEFAULT false;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS employee_type VARCHAR(50);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS supported_tenant_ids INT[] DEFAULT '{}';
+
+ALTER TABLE courses ADD COLUMN IF NOT EXISTS faculty_id INT REFERENCES users(id);
+UPDATE courses SET faculty_id = created_by WHERE faculty_id IS NULL AND created_by IS NOT NULL;
+
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS role VARCHAR(50);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS severity VARCHAR(20) DEFAULT 'info';
+
+ALTER TABLE tenant_ai_settings ADD COLUMN IF NOT EXISTS llm_model VARCHAR(100);
+ALTER TABLE tenant_ai_settings ADD COLUMN IF NOT EXISTS embedding_provider VARCHAR(100);
+ALTER TABLE tenant_ai_settings ADD COLUMN IF NOT EXISTS rerank_enabled BOOLEAN DEFAULT false;
+ALTER TABLE tenant_ai_settings ADD COLUMN IF NOT EXISTS max_tokens INT;
+ALTER TABLE tenant_ai_settings ADD COLUMN IF NOT EXISTS temperature DECIMAL(3,2);
 
 -- ============================================================
 -- INDEXES
@@ -389,33 +422,33 @@ INSERT INTO tenants (name, domain, slug, plan, max_users, max_storage_gb, is_act
 VALUES ('State University', 'state.edu', 'state-university', 'pro', 500, 100, true)
 ON CONFLICT (domain) DO NOTHING;
 
--- Super Admin (password: Admin@12345)
+-- Super Admin (password: SAdm!2026#T7kL)
 INSERT INTO users (email, password_hash, first_name, last_name, role, tenant_id)
 SELECT 'superadmin@platform.local',
-       '$2b$10$8jehTPkfM/09bbCRTKUMPeZtfyQnGm1E2SXSi..e6FTpK9pYVB3gm',
+       '$2b$10$yyelwDmVOX9EaLIJfgl3Ku/4HIw3Tsc4xFYyYj5zhNYAWuRuy3bmq',
        'Platform', 'Admin', 'SUPER_ADMIN', NULL
 WHERE NOT EXISTS (SELECT 1 FROM users WHERE email = 'superadmin@platform.local');
 
--- Tenant Admin (password: Admin@12345)
+-- Tenant Admin (password: TAdm!2026#P4qN)
 INSERT INTO users (email, password_hash, first_name, last_name, role, tenant_id)
 SELECT 'admin@state.edu',
-       '$2b$10$8jehTPkfM/09bbCRTKUMPeZtfyQnGm1E2SXSi..e6FTpK9pYVB3gm',
+       '$2b$10$7hhu6wklQ.UT1KcAqpHn.erDV1zYv0cYN/yRutLeOAniyXPi/rEsC',
        'University', 'Admin', 'TENANT_ADMIN',
        (SELECT id FROM tenants WHERE slug = 'state-university')
 WHERE NOT EXISTS (SELECT 1 FROM users WHERE email = 'admin@state.edu');
 
--- Faculty (password: Admin@12345)
+-- Faculty (password: Fac!2026#R8mV)
 INSERT INTO users (email, password_hash, first_name, last_name, role, tenant_id)
 SELECT 'faculty@state.edu',
-       '$2b$10$8jehTPkfM/09bbCRTKUMPeZtfyQnGm1E2SXSi..e6FTpK9pYVB3gm',
+       '$2b$10$UCoDwB8B.PRl5NMUocwY9..qHRZQOsGTDJkU8OLl6cPlG7rdfj.pS',
        'Professor', 'Smith', 'FACULTY',
        (SELECT id FROM tenants WHERE slug = 'state-university')
 WHERE NOT EXISTS (SELECT 1 FROM users WHERE email = 'faculty@state.edu');
 
--- Student (password: Admin@12345)
+-- Student (password: Stu!2026#W2xJ)
 INSERT INTO users (email, password_hash, first_name, last_name, role, tenant_id)
 SELECT 'student@state.edu',
-       '$2b$10$8jehTPkfM/09bbCRTKUMPeZtfyQnGm1E2SXSi..e6FTpK9pYVB3gm',
+       '$2b$10$34G6AmXck42ISPnkXzUvB.jb12oo4zp7Laj5HWylDOEqWuzNXemtG',
        'Jane', 'Student', 'STUDENT',
        (SELECT id FROM tenants WHERE slug = 'state-university')
 WHERE NOT EXISTS (SELECT 1 FROM users WHERE email = 'student@state.edu');

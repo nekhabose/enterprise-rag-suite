@@ -5,6 +5,7 @@ import {
   Modal, Field, Input, Select, Button, Badge, Table, StatCard,
   Spinner, PageHeader, Card, Tabs, SearchInput, Textarea,
 } from '../components/shared/UI';
+import { autoGrid, uiStyles } from '../shared/ui/styleHelpers';
 import { userApi } from '../utils/api';
 import { useAuth } from '../hooks/useAuth';
 import toast from 'react-hot-toast';
@@ -47,29 +48,29 @@ function Courses() {
   return (
     <div>
       <PageHeader title="My Courses" subtitle={`${courses.length} enrolled courses`} />
-      <div style={{ marginBottom: '20px' }}>
+      <div style={uiStyles.sectionSpacing}>
         <SearchInput value={search} onChange={setSearch} placeholder="Search courses..." />
       </div>
       {loading ? (
-        <div style={{ textAlign: 'center', padding: '60px' }}><Spinner /></div>
+        <div style={uiStyles.loadingCenterText}><Spinner /></div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
+        <div style={autoGrid(280)}>
           {filtered.length === 0 && (
-            <p style={{ color: 'rgba(255,255,255,0.4)', gridColumn: '1/-1', textAlign: 'center', padding: '40px 0' }}>
+            <p style={{ color: 'var(--text-muted)', gridColumn: '1/-1', textAlign: 'center', padding: '40px 0' }}>
               No courses found. Contact your university admin to enroll in courses.
             </p>
           )}
           {filtered.map((course) => (
             <div key={course.id as number} style={{
-              background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
+              background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)',
               borderRadius: '14px', padding: '22px', cursor: 'pointer',
               transition: 'border-color 0.15s',
             }}>
               <div style={{ fontSize: '28px', marginBottom: '12px' }}>📘</div>
-              <h3 style={{ margin: '0 0 8px', fontSize: '16px', fontWeight: 600, color: '#fff' }}>{String(course.title)}</h3>
-              {course.subject && <Badge style={{ marginBottom: '12px' }}>{String(course.subject)}</Badge>}
-              {course.description && (
-                <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.5)', margin: '12px 0 0' }}>
+              <h3 style={{ margin: '0 0 8px', fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)' }}>{String(course.title)}</h3>
+              {Boolean(course.subject) && <Badge style={{ marginBottom: '12px' }}>{String(course.subject)}</Badge>}
+              {Boolean(course.description) && (
+                <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: '12px 0 0' }}>
                   {String(course.description).substring(0, 100)}...
                 </p>
               )}
@@ -140,15 +141,15 @@ function Chat() {
         {messages.length === 0 && (
           <div style={{ textAlign: 'center', padding: '60px 20px' }}>
             <div style={{ fontSize: '48px', marginBottom: '16px' }}>🤖</div>
-            <div style={{ fontSize: '20px', fontWeight: 600, color: '#fff', marginBottom: '8px' }}>AI Tutor Ready</div>
-            <div style={{ fontSize: '14px', color: 'rgba(255,255,255,0.5)' }}>
+            <div style={{ fontSize: '20px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>AI Tutor Ready</div>
+            <div style={{ fontSize: '14px', color: 'var(--text-muted)' }}>
               Ask me anything about your course material. I'll search your documents and provide accurate, cited answers.
             </div>
             <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginTop: '24px', flexWrap: 'wrap' }}>
               {['Explain the key concepts from Chapter 1', 'What are the main topics in this course?', 'Summarize the latest lecture'].map((s) => (
                 <button key={s} onClick={() => setInput(s)} style={{
-                  padding: '8px 16px', borderRadius: '100px', border: '1px solid rgba(124,58,237,0.3)',
-                  background: 'rgba(124,58,237,0.1)', color: '#c4b5fd', fontSize: '13px', cursor: 'pointer',
+                  padding: '8px 16px', borderRadius: '100px', border: '1px solid color-mix(in srgb, var(--brand-600) 30%, transparent)',
+                  background: 'var(--brand-soft)', color: 'var(--brand-700)', fontSize: '13px', cursor: 'pointer',
                   fontFamily: "'DM Sans', sans-serif",
                 }}>{s}</button>
               ))}
@@ -162,15 +163,15 @@ function Chat() {
           }}>
             <div style={{
               maxWidth: '80%', padding: '12px 16px', borderRadius: msg.role === 'user' ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
-              background: msg.role === 'user' ? 'linear-gradient(135deg, #7c3aed, #5b21b6)' : 'rgba(255,255,255,0.06)',
-              border: msg.role === 'user' ? 'none' : '1px solid rgba(255,255,255,0.08)',
-              color: '#fff', fontSize: '14px', lineHeight: 1.6,
+              background: msg.role === 'user' ? 'linear-gradient(135deg, var(--brand-600), var(--brand-700))' : 'var(--bg-elevated)',
+              border: msg.role === 'user' ? 'none' : '1px solid var(--border-subtle)',
+              color: 'var(--text-primary)', fontSize: '14px', lineHeight: 1.6,
             }}>
               {msg.content}
               {msg.sources && (msg.sources as unknown[]).length > 0 && (
-                <div style={{ marginTop: '8px', fontSize: '12px', color: 'rgba(255,255,255,0.5)' }}>
+                <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-muted)' }}>
                   Sources: {(msg.sources as Record<string, string>[]).map((s, si) => (
-                    <span key={si} style={{ marginLeft: '4px', color: '#a78bfa' }}>[{si + 1}] {s.filename ?? s.title}</span>
+                    <span key={si} style={{ marginLeft: '4px', color: 'var(--brand-700)' }}>[{si + 1}] {s.filename ?? s.title}</span>
                   ))}
                 </div>
               )}
@@ -181,10 +182,10 @@ function Chat() {
         {sending && (
           <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
             <div style={{
-              padding: '12px 16px', borderRadius: '14px', background: 'rgba(255,255,255,0.06)',
-              border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.5)', fontSize: '14px',
+              padding: '12px 16px', borderRadius: '14px', background: 'var(--bg-elevated)',
+              border: '1px solid var(--border-subtle)', color: 'var(--text-muted)', fontSize: '14px',
             }}>
-              <span style={{ animation: 'pulse 1.5s infinite' }}>Thinking...</span>
+              <span >Thinking...</span>
             </div>
           </div>
         )}
@@ -194,8 +195,8 @@ function Chat() {
       {/* Input */}
       <div style={{
         display: 'flex', gap: '12px', padding: '16px',
-        background: 'rgba(255,255,255,0.03)', borderRadius: '14px',
-        border: '1px solid rgba(255,255,255,0.08)',
+        background: 'var(--bg-elevated)', borderRadius: '14px',
+        border: '1px solid var(--border-subtle)',
       }}>
         <textarea
           value={input}
@@ -204,7 +205,7 @@ function Chat() {
           placeholder="Ask a question about your course material..."
           rows={1}
           style={{
-            flex: 1, background: 'none', border: 'none', color: '#fff', fontSize: '14px',
+            flex: 1, background: 'none', border: 'none', color: 'var(--text-primary)', fontSize: '14px',
             resize: 'none', outline: 'none', fontFamily: "'DM Sans', sans-serif", lineHeight: 1.5,
           }}
         />
@@ -251,32 +252,32 @@ function Assessments() {
       <div>
         <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '24px' }}>
           <Button variant="ghost" onClick={() => { setActiveAssessment(null); setAnswers({}); setResults(null); }}>← Back</Button>
-          <h1 style={{ margin: 0, fontSize: '22px', fontWeight: 700, color: '#fff' }}>{String(activeAssessment.title)}</h1>
+          <h1 style={{ margin: 0, fontSize: '22px', fontWeight: 700, color: 'var(--text-primary)' }}>{String(activeAssessment.title)}</h1>
         </div>
 
         {results ? (
           <Card>
             <div style={{ textAlign: 'center', padding: '20px' }}>
               <div style={{ fontSize: '48px', marginBottom: '12px' }}>🎉</div>
-              <div style={{ fontSize: '28px', fontWeight: 700, color: '#fff', marginBottom: '8px' }}>
+              <div style={{ fontSize: '28px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>
                 {results.score as number ?? 0}%
               </div>
-              <div style={{ color: 'rgba(255,255,255,0.6)' }}>Assessment Complete</div>
+              <div style={{ color: 'var(--text-secondary)' }}>Assessment Complete</div>
             </div>
           </Card>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             {questions.map((q, qi) => (
               <Card key={qi}>
-                <div style={{ fontWeight: 600, color: '#fff', marginBottom: '16px' }}>
+                <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '16px' }}>
                   Q{qi + 1}. {String(q.question_text)}
                 </div>
                 {q.question_type === 'mcq' && (q.options as string[])?.map((opt, oi) => (
                   <label key={oi} style={{
                     display: 'flex', gap: '10px', alignItems: 'center', padding: '10px 14px',
                     borderRadius: '8px', cursor: 'pointer', marginBottom: '8px',
-                    background: answers[q.id as number] === opt ? 'rgba(124,58,237,0.2)' : 'rgba(255,255,255,0.04)',
-                    border: `1px solid ${answers[q.id as number] === opt ? 'rgba(124,58,237,0.5)' : 'rgba(255,255,255,0.08)'}`,
+                    background: answers[q.id as number] === opt ? 'var(--brand-soft-strong)' : 'var(--bg-surface)',
+                    border: `1px solid ${answers[q.id as number] === opt ? 'color-mix(in srgb, var(--brand-600) 50%, transparent)' : 'var(--border-subtle)'}`,
                   }}>
                     <input
                       type="radio"
@@ -284,9 +285,9 @@ function Assessments() {
                       value={opt}
                       checked={answers[q.id as number] === opt}
                       onChange={() => setAnswers({ ...answers, [q.id as number]: opt })}
-                      style={{ accentColor: '#7c3aed' }}
+                      style={{ accentColor: 'var(--brand-600)' }}
                     />
-                    <span style={{ color: '#fff', fontSize: '14px' }}>{opt}</span>
+                    <span style={{ color: 'var(--text-primary)', fontSize: '14px' }}>{opt}</span>
                   </label>
                 ))}
                 {q.question_type === 'short_answer' && (
@@ -311,14 +312,14 @@ function Assessments() {
     <div>
       <PageHeader title="Assessments" subtitle="Quizzes and assignments" />
       {loading ? <Spinner /> : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
+        <div style={autoGrid(280)}>
           {assessments.length === 0 && (
-            <p style={{ color: 'rgba(255,255,255,0.4)', gridColumn: '1/-1' }}>No assessments available yet.</p>
+            <p style={{ color: 'var(--text-muted)', gridColumn: '1/-1' }}>No assessments available yet.</p>
           )}
           {assessments.map((a) => (
             <Card key={a.id as number} style={{ cursor: 'pointer' }}>
               <div style={{ fontSize: '24px', marginBottom: '12px' }}>✏️</div>
-              <h3 style={{ margin: '0 0 8px', fontSize: '16px', fontWeight: 600, color: '#fff' }}>{String(a.title)}</h3>
+              <h3 style={{ margin: '0 0 8px', fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)' }}>{String(a.title)}</h3>
               <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
                 <Badge>{String(a.assessment_type ?? 'quiz').toUpperCase()}</Badge>
                 <Badge>{String(a.difficulty ?? 'medium')}</Badge>
@@ -372,7 +373,7 @@ function StudentProgress() {
     <div>
       <PageHeader title="Student Progress" subtitle="Engagement and performance across your courses" />
       {loading ? <Spinner /> : (
-        <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', overflow: 'hidden' }}>
+        <div style={uiStyles.surfaceTableShell}>
           <Table
             columns={[
               { key: 'student_name', label: 'Student' },
@@ -467,7 +468,7 @@ export default function UserPortal() {
   }
 
   const navItems = user.role === 'FACULTY' ? NAV_ITEMS_FACULTY : NAV_ITEMS_STUDENT;
-  const accentColor = user.role === 'FACULTY' ? '#0ea5e9' : '#10b981';
+  const accentColor = user.role === 'FACULTY' ? 'var(--brand-600)' : 'var(--brand-500)';
 
   return (
     <SidebarLayout

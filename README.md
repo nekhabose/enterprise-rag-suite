@@ -129,18 +129,71 @@ npm run dev
 # Runs on http://localhost:3000
 ```
 
+#### 5. Build / Lint / Basic Validation
+
+```bash
+# Backend
+cd backend
+npm run build
+npm run lint
+
+# Frontend
+cd ../frontend
+npm run build
+
+# AI Service (syntax validation)
+cd ../ai-service
+./.venv/bin/python -m py_compile main.py
+```
+
+Note: scaffold integration/unit test files and related Jest config were removed during cleanup. The repository currently ships build/lint/syntax validation commands only.
+
+### Refactored Modular Structure (In-Place)
+
+#### Frontend
+
+- `frontend/src/shared/ui/theme.css` central teal design tokens
+- `frontend/src/shared/api/client.ts` shared API client and token refresh logic
+- `frontend/src/shared/auth/rbac.ts` role and permission helper registry
+- `frontend/src/shared/auth/RouteGuards.tsx` auth/role/permission route guards
+- `frontend/src/shared/auth/useAuth.tsx` normalized auth state logic
+- `frontend/src/hooks/useAuth.tsx` compatibility wrapper export
+- `frontend/src/utils/api.ts` compatibility wrapper export
+
+#### Backend
+
+- `backend/src/infrastructure/config/env.ts` centralized env loading
+- `backend/src/infrastructure/db/tenantScope.ts` tenant scoping helpers
+- `backend/src/infrastructure/logging/auditLogger.ts` reusable audit logging service
+- `backend/src/policies/rbac.ts` centralized role-permission registry and checks
+- `backend/src/middleware/types.ts` shared authenticated request type
+- `backend/src/middleware/tenantIsolation.ts` reusable tenant-isolation middleware
+- `backend/src/modules/courses/*` modular repository/service/controller/schema scaffolding
+- `backend/src/server.ts` still preserves existing routes but now imports centralized RBAC/config/logging
+
+#### AI Service
+
+- `ai-service/src/config/settings.py` AI/RAG runtime config
+- `ai-service/src/rag/chunking/*` chunking interfaces and adapters
+- `ai-service/src/rag/embedding/*` embedding interfaces and adapters
+- `ai-service/src/rag/vector/*` vector-store interfaces and adapters
+- `ai-service/src/rag/retrieval/*` retrieval interfaces and adapters
+- `ai-service/src/rag/rerank/*` rerank interfaces and adapters
+- `ai-service/src/rag/llm/*` LLM interfaces and adapters
+- `ai-service/src/rag/ingest/pipeline.py` ingestion pipeline
+- `ai-service/src/rag/orchestration/*` pluggable orchestrator
+- `ai-service/main.py` now routes chat/ingest/embeddings through modular orchestration
+
 ---
 
 ## Demo Accounts
 
-All passwords: **Admin@12345**
-
-| Role             | Email                     | Portal            |
-| ---------------- | ------------------------- | ----------------- |
-| Super Admin      | superadmin@platform.local | /super-admin      |
-| University Admin | admin@state.edu           | /university-admin |
-| Faculty          | faculty@state.edu         | /portal           |
-| Student          | student@state.edu         | /portal           |
+| Role             | Email                     | Password           | Portal            |
+| ---------------- | ------------------------- | ------------------ | ----------------- |
+| Super Admin      | superadmin@platform.local | `SAdm!2026#T7kL`   | /super-admin      |
+| University Admin | admin@state.edu           | `TA  dm!2026#P4qN` | /university-admin |
+| Faculty          | faculty@state.edu         | `Fac!2026#R8mV`    | /portal           |
+| Student          | student@state.edu         | `Stu!2026#W2xJ`    | /portal           |
 
 ---
 

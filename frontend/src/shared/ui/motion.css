@@ -1,0 +1,26 @@
+.motion-enter {
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity var(--motion-page) var(--ease-standard), transform var(--motion-page) var(--ease-standard);
+}
+.motion-enter.motion-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+}
+.motion-hover-lift {
+  transition: transform var(--motion-fast) var(--ease-standard), box-shadow var(--motion-fast) var(--ease-standard);
+}
+.motion-hover-lift:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+@media (prefers-reduced-motion: reduce) {
+  .motion-enter,
+  .motion-enter.motion-enter-active,
+  .motion-hover-lift,
+  .motion-hover-lift:hover {
+    opacity: 1;
+    transform: none;
+    box-shadow: none;
+  }
+}
