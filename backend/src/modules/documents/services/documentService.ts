@@ -24,7 +24,13 @@ export function createDocumentService(deps: LegacyRouteDeps) {
             return res.status(400).json({ error: 'Faculty upload requires a valid course_id' });
           }
           const assigned = await repo.query(
-            'SELECT id FROM courses WHERE id = $1 AND tenant_id = $2 AND faculty_id = $3',
+            `SELECT c.id
+             FROM courses c
+             WHERE c.id = $1 AND c.tenant_id = $2
+               AND (
+                 c.faculty_id = $3
+                 OR EXISTS (SELECT 1 FROM course_instructors ci WHERE ci.course_id = c.id AND ci.user_id = $3)
+               )`,
             [normalizedCourseId, tenantId, userId],
           );
           if (!assigned.rows.length) {
@@ -78,9 +84,15 @@ export function createDocumentService(deps: LegacyRouteDeps) {
             warning: aiResponse.data?.warning,
           });
         } catch (aiErr: any) {
-          await repo.query('DELETE FROM documents WHERE id = $1', [documentId]);
-          fs.unlink(absolutePath, () => {});
-          return res.status(500).json({ error: 'Failed to index document', details: aiErr.response?.data?.detail });
+          await repo.query('UPDATE documents SET is_indexed = false WHERE id = $1', [documentId]);
+          return res.status(202).json({
+            success: true,
+            document_id: documentId,
+            filename: req.file.originalname,
+            chunks_created: 0,
+            warning: 'Document uploaded but indexing is pending/failed. You can retry indexing from AI service logs.',
+            details: aiErr.response?.data?.detail,
+          });
         }
       } catch (err) {
         console.error('[DOCUMENTS] Upload error:', err);
@@ -105,7 +117,12 @@ export function createDocumentService(deps: LegacyRouteDeps) {
           params.push(userId);
         } else if (userRole === ROLES.FACULTY) {
           q += ` AND (d.user_id = $2 OR d.course_id IN (
-                   SELECT id FROM courses WHERE faculty_id = $2 AND tenant_id = $1))`;
+                   SELECT c.id FROM courses c
+                   WHERE c.tenant_id = $1
+                     AND (
+                       c.faculty_id = $2
+                       OR EXISTS (SELECT 1 FROM course_instructors ci WHERE ci.course_id = c.id AND ci.user_id = $2)
+                     )))`;
           params.push(userId);
         }
 
@@ -164,7 +181,14 @@ export function createDocumentService(deps: LegacyRouteDeps) {
           q += ` AND (user_id = $3 OR course_id IN (SELECT course_id FROM course_enrollments WHERE user_id = $3))`;
         } else if (userRole === ROLES.FACULTY) {
           params.push(userId);
-          q += ` AND (user_id = $3 OR course_id IN (SELECT id FROM courses WHERE faculty_id = $3 AND tenant_id = $2))`;
+          q += ` AND (user_id = $3 OR course_id IN (
+            SELECT c.id FROM courses c
+            WHERE c.tenant_id = $2
+              AND (
+                c.faculty_id = $3
+                OR EXISTS (SELECT 1 FROM course_instructors ci WHERE ci.course_id = c.id AND ci.user_id = $3)
+              )
+          ))`;
         }
         const result = await repo.query(q, params);
         if (!result.rows.length) return res.status(404).json({ error: 'Document not found' });
@@ -178,6 +202,51 @@ export function createDocumentService(deps: LegacyRouteDeps) {
         return res.download(file_path, filename);
       } catch {
         return res.status(500).json({ error: 'Failed to download document' });
+      }
+    },
+
+    async preview(req: AuthRequest, res: Response) {
+      const docId = parseInt(req.params.id);
+      const tenantId = req.tenantId!;
+      const userId = req.userId!;
+      const userRole = req.userRole;
+
+      try {
+        const params: unknown[] = [docId, tenantId];
+        let q = 'SELECT filename, file_path, course_id, user_id FROM documents WHERE id = $1 AND tenant_id = $2';
+        if (userRole === ROLES.STUDENT) {
+          params.push(userId);
+          q += ` AND (user_id = $3 OR course_id IN (SELECT course_id FROM course_enrollments WHERE user_id = $3))`;
+        } else if (userRole === ROLES.FACULTY) {
+          params.push(userId);
+          q += ` AND (user_id = $3 OR course_id IN (
+            SELECT c.id FROM courses c
+            WHERE c.tenant_id = $2
+              AND (
+                c.faculty_id = $3
+                OR EXISTS (SELECT 1 FROM course_instructors ci WHERE ci.course_id = c.id AND ci.user_id = $3)
+              )
+          ))`;
+        }
+        const result = await repo.query(q, params);
+        if (!result.rows.length) return res.status(404).json({ error: 'Document not found' });
+
+        const { file_path, filename } = result.rows[0];
+        if (!file_path || !fs.existsSync(file_path)) {
+          return res.status(404).json({ error: 'File not found on disk' });
+        }
+        const ext = String(path.extname(filename ?? '').toLowerCase());
+        const contentTypeByExt: Record<string, string> = {
+          '.pdf': 'application/pdf',
+          '.txt': 'text/plain; charset=utf-8',
+          '.md': 'text/markdown; charset=utf-8',
+          '.csv': 'text/csv; charset=utf-8',
+        };
+        if (contentTypeByExt[ext]) res.setHeader('Content-Type', contentTypeByExt[ext]);
+        res.setHeader('Content-Disposition', `inline; filename="${String(filename ?? 'document').replace(/"/g, '')}"`);
+        return res.sendFile(path.resolve(file_path));
+      } catch {
+        return res.status(500).json({ error: 'Failed to preview document' });
       }
     },
   };

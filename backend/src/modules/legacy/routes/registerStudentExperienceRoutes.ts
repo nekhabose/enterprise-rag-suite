@@ -347,53 +347,275 @@ export function registerStudentExperienceRoutes(deps: LegacyRouteDeps) {
     const sortDir = String(req.query.sort_dir ?? 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
     const offset = (page - 1) * limit;
 
-    const sortable: Record<string, string> = {
-      name: 'd.filename',
-      created: 'd.uploaded_at',
-      last_modified: 'd.uploaded_at',
-      modified_by: 'u.email',
-      size: 'd.file_size_bytes',
-      status: 'd.is_indexed',
-      uploaded_at: 'd.uploaded_at',
-    };
-    const orderExpr = sortable[sortBy] ?? sortable.uploaded_at;
-
     try {
       if (!(await ensureEnrolledCourse(req, res, courseId))) return;
-      const params: unknown[] = [courseId];
-      let where = 'WHERE d.course_id = $1';
-      if (search) {
-        params.push(`%${search}%`);
-        where += ` AND d.filename ILIKE $${params.length}`;
-      }
-      params.push(limit, offset);
+      const [documents, videos] = await Promise.all([
+        pool.query(
+          `SELECT d.id, d.filename AS name, d.uploaded_at AS created, d.uploaded_at AS last_modified,
+                  u.email AS modified_by, d.file_size_bytes AS size, d.is_indexed AS status,
+                  COALESCE(dc.chunk_count, 0)::int AS chunk_count,
+                  CASE
+                    WHEN COALESCE(dc.chunk_count, 0) > 0 THEN 'Indexed'
+                    WHEN d.uploaded_at > NOW() - INTERVAL '5 minutes' THEN 'Processing'
+                    ELSE 'Failed'
+                  END AS index_status,
+                  'DOCUMENT'::text AS content_type,
+                  NULL::text AS youtube_url,
+                  'upload'::text AS source_type
+           FROM documents d
+           LEFT JOIN users u ON u.id = d.user_id
+           LEFT JOIN (
+             SELECT document_id, COUNT(*) AS chunk_count
+             FROM chunks
+             WHERE document_id IS NOT NULL
+             GROUP BY document_id
+           ) dc ON dc.document_id = d.id
+           WHERE d.course_id = $1`,
+          [courseId],
+        ),
+        pool.query(
+          `SELECT v.id, COALESCE(v.title, v.youtube_url, 'Video') AS name, v.created_at AS created, v.created_at AS last_modified,
+                  u.email AS modified_by, v.file_size_bytes AS size, true AS status,
+                  COALESCE(vc.chunk_count, 0)::int AS chunk_count,
+                  CASE
+                    WHEN COALESCE(vc.chunk_count, 0) > 0 THEN 'Indexed'
+                    WHEN v.created_at > NOW() - INTERVAL '10 minutes' THEN 'Processing'
+                    ELSE 'Failed'
+                  END AS index_status,
+                  'VIDEO'::text AS content_type,
+                  v.youtube_url,
+                  COALESCE(v.source_type, 'youtube') AS source_type
+           FROM videos v
+           LEFT JOIN users u ON u.id = v.user_id
+           LEFT JOIN (
+             SELECT video_id, COUNT(*) AS chunk_count
+             FROM chunks
+             WHERE video_id IS NOT NULL
+             GROUP BY video_id
+           ) vc ON vc.video_id = v.id
+           WHERE v.course_id = $1`,
+          [courseId],
+        ),
+      ]);
 
-      const rows = await pool.query(
-        `SELECT d.id, d.filename AS name, d.uploaded_at AS created, d.uploaded_at AS last_modified,
-                u.email AS modified_by, d.file_size_bytes AS size, d.is_indexed AS status
-         FROM documents d
-         LEFT JOIN users u ON u.id = d.user_id
-         ${where}
-         ORDER BY ${orderExpr} ${sortDir}
-         LIMIT $${params.length - 1} OFFSET $${params.length}`,
-        params,
-      );
-      const total = await pool.query(
-        `SELECT COUNT(*)::int AS count
-         FROM documents d
-         ${where}`,
-        params.slice(0, search ? 2 : 1),
-      );
+      const combined = [...documents.rows, ...videos.rows].filter((row) => (
+        !search || String(row.name ?? '').toLowerCase().includes(search)
+      ));
+
+      const valueForSort = (row: Record<string, unknown>): string | number => {
+        if (sortBy === 'name') return String(row.name ?? '').toLowerCase();
+        if (sortBy === 'created') return new Date(String(row.created ?? 0)).getTime();
+        if (sortBy === 'last_modified') return new Date(String(row.last_modified ?? 0)).getTime();
+        if (sortBy === 'modified_by') return String(row.modified_by ?? '').toLowerCase();
+        if (sortBy === 'size') return Number(row.size ?? 0);
+        if (sortBy === 'status') return String(row.index_status ?? '').toLowerCase();
+        return new Date(String(row.created ?? 0)).getTime();
+      };
+
+      combined.sort((a, b) => {
+        const av = valueForSort(a as Record<string, unknown>);
+        const bv = valueForSort(b as Record<string, unknown>);
+        if (typeof av === 'number' && typeof bv === 'number') {
+          return sortDir === 'ASC' ? av - bv : bv - av;
+        }
+        const cmp = String(av).localeCompare(String(bv));
+        return sortDir === 'ASC' ? cmp : -cmp;
+      });
+
+      const totalCount = combined.length;
+      const pageItems = combined.slice(offset, offset + limit);
       return res.json({
-        items: rows.rows,
+        items: pageItems,
         pagination: {
           page,
           limit,
-          total: total.rows[0]?.count ?? 0,
+          total: totalCount,
         },
       });
     } catch {
       return res.status(500).json({ error: 'Failed to load files' });
+    }
+  });
+
+  app.get('/student/courses/:courseId/assignments', authMiddleware, requirePermission('ASSESSMENT_READ'), async (req: AuthRequest, res: Response) => {
+    if (!ensureStudent(req, res)) return;
+    const courseId = Number(req.params.courseId);
+    if (!Number.isFinite(courseId) || courseId <= 0) return res.status(400).json({ error: 'Invalid course ID' });
+    try {
+      if (!(await ensureEnrolledCourse(req, res, courseId))) return;
+      const userId = req.userId!;
+      const result = await pool.query(
+        `SELECT a.id, a.title, a.description, a.due_at, a.is_published,
+                s.id AS submission_id, s.status AS submission_status, s.score, s.feedback, s.submitted_at, s.graded_at
+         FROM assignments a
+         LEFT JOIN assignment_submissions s ON s.assignment_id = a.id AND s.student_id = $2
+         WHERE a.course_id = $1 AND a.is_published = true
+         ORDER BY a.due_at NULLS LAST, a.created_at DESC`,
+        [courseId, userId],
+      );
+      return res.json({ assignments: result.rows });
+    } catch {
+      return res.status(500).json({ error: 'Failed to load assignments' });
+    }
+  });
+
+  app.post('/student/courses/:courseId/assignments/:assignmentId/submit', authMiddleware, requirePermission('ASSESSMENT_READ'), async (req: AuthRequest, res: Response) => {
+    if (!ensureStudent(req, res)) return;
+    const courseId = Number(req.params.courseId);
+    const assignmentId = Number(req.params.assignmentId);
+    if (!Number.isFinite(courseId) || courseId <= 0 || !Number.isFinite(assignmentId) || assignmentId <= 0) {
+      return res.status(400).json({ error: 'Invalid course or assignment ID' });
+    }
+    try {
+      if (!(await ensureEnrolledCourse(req, res, courseId))) return;
+      const userId = req.userId!;
+      const assignment = await pool.query(
+        'SELECT id FROM assignments WHERE id = $1 AND course_id = $2 AND is_published = true',
+        [assignmentId, courseId],
+      );
+      if (!assignment.rows.length) return res.status(404).json({ error: 'Assignment not found' });
+      const result = await pool.query(
+        `INSERT INTO assignment_submissions (assignment_id, student_id, submission_text, submission_url, status, submitted_at)
+         VALUES ($1,$2,$3,$4,'submitted',NOW())
+         ON CONFLICT (assignment_id, student_id)
+         DO UPDATE SET
+           submission_text = EXCLUDED.submission_text,
+           submission_url = EXCLUDED.submission_url,
+           status = 'submitted',
+           submitted_at = NOW(),
+           feedback = NULL,
+           graded_at = NULL
+         RETURNING *`,
+        [
+          assignmentId,
+          userId,
+          req.body?.submission_text ? String(req.body.submission_text) : null,
+          req.body?.submission_url ? String(req.body.submission_url) : null,
+        ],
+      );
+      return res.json({ submission: result.rows[0] });
+    } catch {
+      return res.status(500).json({ error: 'Failed to submit assignment' });
+    }
+  });
+
+  app.get('/student/courses/:courseId/inbox/threads', authMiddleware, requirePermission('CHAT_USE'), async (req: AuthRequest, res: Response) => {
+    if (!ensureStudent(req, res)) return;
+    const courseId = Number(req.params.courseId);
+    if (!Number.isFinite(courseId) || courseId <= 0) return res.status(400).json({ error: 'Invalid course ID' });
+    try {
+      if (!(await ensureEnrolledCourse(req, res, courseId))) return;
+      const userId = req.userId!;
+      const threads = await pool.query(
+        `SELECT t.id, t.title, t.status, t.updated_at, t.created_by, t.target_user_id,
+                (SELECT body FROM course_inbox_messages m WHERE m.thread_id = t.id ORDER BY m.created_at DESC LIMIT 1) AS snippet
+         FROM course_inbox_threads t
+         WHERE t.course_id = $1
+           AND (t.target_user_id IS NULL OR t.target_user_id = $2 OR t.created_by = $2)
+         ORDER BY t.updated_at DESC`,
+        [courseId, userId],
+      );
+      return res.json({ threads: threads.rows });
+    } catch {
+      return res.status(500).json({ error: 'Failed to load course inbox threads' });
+    }
+  });
+
+  app.post('/student/courses/:courseId/inbox/threads', authMiddleware, requirePermission('CHAT_USE'), async (req: AuthRequest, res: Response) => {
+    if (!ensureStudent(req, res)) return;
+    const courseId = Number(req.params.courseId);
+    const title = String(req.body?.title ?? '').trim();
+    const body = String(req.body?.body ?? '').trim();
+    if (!Number.isFinite(courseId) || courseId <= 0) return res.status(400).json({ error: 'Invalid course ID' });
+    if (!title || !body) return res.status(400).json({ error: 'title and body required' });
+    try {
+      if (!(await ensureEnrolledCourse(req, res, courseId))) return;
+      const userId = req.userId!;
+      const tenantId = req.tenantId!;
+      const faculty = await pool.query(
+        'SELECT faculty_id FROM courses WHERE id = $1 AND tenant_id = $2',
+        [courseId, tenantId],
+      );
+      if (!faculty.rows.length) return res.status(404).json({ error: 'Course not found' });
+      const thread = await pool.query(
+        `INSERT INTO course_inbox_threads (course_id, tenant_id, created_by, target_user_id, title, status, updated_at)
+         VALUES ($1,$2,$3,$4,$5,'open',NOW())
+         RETURNING *`,
+        [courseId, tenantId, userId, faculty.rows[0].faculty_id ?? null, title],
+      );
+      await pool.query(
+        `INSERT INTO course_inbox_messages (thread_id, sender_id, body)
+         VALUES ($1,$2,$3)`,
+        [thread.rows[0].id, userId, body],
+      );
+      return res.status(201).json({ thread: thread.rows[0] });
+    } catch {
+      return res.status(500).json({ error: 'Failed to create course thread' });
+    }
+  });
+
+  app.get('/student/courses/:courseId/inbox/threads/:threadId', authMiddleware, requirePermission('CHAT_USE'), async (req: AuthRequest, res: Response) => {
+    if (!ensureStudent(req, res)) return;
+    const courseId = Number(req.params.courseId);
+    const threadId = Number(req.params.threadId);
+    if (!Number.isFinite(courseId) || courseId <= 0 || !Number.isFinite(threadId) || threadId <= 0) {
+      return res.status(400).json({ error: 'Invalid course or thread ID' });
+    }
+    try {
+      if (!(await ensureEnrolledCourse(req, res, courseId))) return;
+      const userId = req.userId!;
+      const thread = await pool.query(
+        `SELECT id
+         FROM course_inbox_threads
+         WHERE id = $1 AND course_id = $2
+           AND (target_user_id IS NULL OR target_user_id = $3 OR created_by = $3)`,
+        [threadId, courseId, userId],
+      );
+      if (!thread.rows.length) return res.status(404).json({ error: 'Thread not found' });
+      const messages = await pool.query(
+        `SELECT m.id, m.body, m.created_at, m.sender_id, u.email, u.first_name, u.last_name, u.role
+         FROM course_inbox_messages m
+         LEFT JOIN users u ON u.id = m.sender_id
+         WHERE m.thread_id = $1
+         ORDER BY m.created_at ASC`,
+        [threadId],
+      );
+      return res.json({ messages: messages.rows });
+    } catch {
+      return res.status(500).json({ error: 'Failed to load thread messages' });
+    }
+  });
+
+  app.post('/student/courses/:courseId/inbox/threads/:threadId/messages', authMiddleware, requirePermission('CHAT_USE'), async (req: AuthRequest, res: Response) => {
+    if (!ensureStudent(req, res)) return;
+    const courseId = Number(req.params.courseId);
+    const threadId = Number(req.params.threadId);
+    const body = String(req.body?.body ?? '').trim();
+    if (!Number.isFinite(courseId) || courseId <= 0 || !Number.isFinite(threadId) || threadId <= 0) {
+      return res.status(400).json({ error: 'Invalid course or thread ID' });
+    }
+    if (!body) return res.status(400).json({ error: 'body required' });
+    try {
+      if (!(await ensureEnrolledCourse(req, res, courseId))) return;
+      const userId = req.userId!;
+      const thread = await pool.query(
+        `SELECT id
+         FROM course_inbox_threads
+         WHERE id = $1 AND course_id = $2
+           AND (target_user_id IS NULL OR target_user_id = $3 OR created_by = $3)`,
+        [threadId, courseId, userId],
+      );
+      if (!thread.rows.length) return res.status(404).json({ error: 'Thread not found' });
+      const msg = await pool.query(
+        `INSERT INTO course_inbox_messages (thread_id, sender_id, body)
+         VALUES ($1,$2,$3)
+         RETURNING *`,
+        [threadId, userId, body],
+      );
+      await pool.query('UPDATE course_inbox_threads SET updated_at = NOW() WHERE id = $1', [threadId]);
+      return res.status(201).json({ message: msg.rows[0] });
+    } catch {
+      return res.status(500).json({ error: 'Failed to send reply' });
     }
   });
 

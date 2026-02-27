@@ -380,7 +380,11 @@ const ensureTables = async () => {
 
   await pool.query(`
     ALTER TABLE videos
-      ADD COLUMN IF NOT EXISTS course_id INT REFERENCES courses(id)
+      ADD COLUMN IF NOT EXISTS course_id INT REFERENCES courses(id),
+      ADD COLUMN IF NOT EXISTS source_type VARCHAR(20) DEFAULT 'youtube',
+      ADD COLUMN IF NOT EXISTS file_path TEXT,
+      ADD COLUMN IF NOT EXISTS mime_type VARCHAR(120),
+      ADD COLUMN IF NOT EXISTS file_size_bytes BIGINT
   `);
 
   await pool.query(`
@@ -467,11 +471,22 @@ const ensureTables = async () => {
   `);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS course_instructors (
+      id SERIAL PRIMARY KEY,
+      course_id INT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      assigned_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(course_id, user_id)
+    )
+  `);
+
+  await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_assessment_settings_course ON assessment_settings(course_id);
     CREATE INDEX IF NOT EXISTS idx_assignments_course ON assignments(course_id, due_at);
     CREATE INDEX IF NOT EXISTS idx_assignment_submissions_assignment ON assignment_submissions(assignment_id, student_id);
     CREATE INDEX IF NOT EXISTS idx_course_inbox_threads_course ON course_inbox_threads(course_id, updated_at);
     CREATE INDEX IF NOT EXISTS idx_course_inbox_messages_thread ON course_inbox_messages(thread_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_course_instructors_course ON course_instructors(course_id, user_id);
   `);
 };
 

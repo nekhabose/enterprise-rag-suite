@@ -159,11 +159,36 @@ export function createAssessmentService(deps: LegacyRouteDeps) {
       const { userId, tenantId, userRole } = req;
 
       try {
+        let assessment;
         const isAdmin = [ROLES.TENANT_ADMIN, ROLES.FACULTY, ROLES.SUPER_ADMIN].includes(userRole as any);
-        const assessment = await repo.query(
-          `SELECT * FROM assessments WHERE id = $1 AND tenant_id = $2 ${isAdmin ? '' : 'AND user_id = $3'}`,
-          isAdmin ? [assessmentId, tenantId] : [assessmentId, tenantId, userId],
-        );
+
+        if (isAdmin) {
+          assessment = await repo.query(
+            `SELECT * FROM assessments WHERE id = $1 AND tenant_id = $2`,
+            [assessmentId, tenantId],
+          );
+        } else if (userRole === ROLES.STUDENT) {
+          assessment = await repo.query(
+            `SELECT DISTINCT a.*
+             FROM assessments a
+             JOIN assessment_settings s ON s.assessment_id = a.id
+             JOIN course_module_items cmi ON cmi.quiz_id = a.id
+             JOIN course_modules cm ON cm.id = cmi.module_id AND cm.course_id = s.course_id
+             JOIN course_enrollments ce ON ce.course_id = s.course_id
+             WHERE a.id = $1
+               AND a.tenant_id = $2
+               AND ce.user_id = $3
+               AND s.is_published = true
+               AND cm.is_published = true
+               AND cmi.is_published = true`,
+            [assessmentId, tenantId, userId],
+          );
+        } else {
+          assessment = await repo.query(
+            `SELECT * FROM assessments WHERE id = $1 AND tenant_id = $2 AND user_id = $3`,
+            [assessmentId, tenantId, userId],
+          );
+        }
 
         if (!assessment.rows.length) {
           return res.status(404).json({ error: 'Assessment not found' });
@@ -182,11 +207,35 @@ export function createAssessmentService(deps: LegacyRouteDeps) {
       const { tenantId, userId, userRole } = req;
 
       try {
+        let assessment;
         const isAdmin = [ROLES.TENANT_ADMIN, ROLES.FACULTY, ROLES.SUPER_ADMIN].includes(userRole as any);
-        const assessment = await repo.query(
-          `SELECT id FROM assessments WHERE id = $1 AND tenant_id = $2 ${isAdmin ? '' : 'AND user_id = $3'}`,
-          isAdmin ? [assessmentId, tenantId] : [assessmentId, tenantId, userId],
-        );
+        if (isAdmin) {
+          assessment = await repo.query(
+            `SELECT id FROM assessments WHERE id = $1 AND tenant_id = $2`,
+            [assessmentId, tenantId],
+          );
+        } else if (userRole === ROLES.STUDENT) {
+          assessment = await repo.query(
+            `SELECT DISTINCT a.id
+             FROM assessments a
+             JOIN assessment_settings s ON s.assessment_id = a.id
+             JOIN course_module_items cmi ON cmi.quiz_id = a.id
+             JOIN course_modules cm ON cm.id = cmi.module_id AND cm.course_id = s.course_id
+             JOIN course_enrollments ce ON ce.course_id = s.course_id
+             WHERE a.id = $1
+               AND a.tenant_id = $2
+               AND ce.user_id = $3
+               AND s.is_published = true
+               AND cm.is_published = true
+               AND cmi.is_published = true`,
+            [assessmentId, tenantId, userId],
+          );
+        } else {
+          assessment = await repo.query(
+            `SELECT id FROM assessments WHERE id = $1 AND tenant_id = $2 AND user_id = $3`,
+            [assessmentId, tenantId, userId],
+          );
+        }
         if (!assessment.rows.length) return res.status(404).json({ error: 'Assessment not found' });
 
         const qResult = await repo.query(

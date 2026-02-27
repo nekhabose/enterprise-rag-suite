@@ -88,7 +88,9 @@ export function createAuthLegacyService(deps: LegacyRouteDeps) {
     async refresh(req: AuthRequest, res: Response) {
       const cookieToken = parseCookies(req.headers.cookie)[REFRESH_COOKIE_NAME];
       const refreshToken = req.body?.refreshToken || cookieToken;
-      if (!refreshToken) return res.status(400).json({ error: 'Refresh token required' });
+      if (!refreshToken) {
+        return res.status(200).json({ accessToken: null, token: null, authenticated: false });
+      }
 
       try {
         const decoded = jwt.verify(refreshToken, JWT_SECRET) as {

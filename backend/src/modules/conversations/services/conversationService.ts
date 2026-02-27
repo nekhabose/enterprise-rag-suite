@@ -83,8 +83,8 @@ export function createConversationService(deps: LegacyRouteDeps) {
     },
 
     send: async (req: AuthRequest, res: Response) => {
-      const { conversation_id, question, document_ids, provider, model, retrieval_strategy, enable_reranking, top_k } = req.body;
-      const { userId, tenantId } = req;
+      const { conversation_id, course_id, question, document_ids, provider, model, retrieval_strategy, enable_reranking, top_k } = req.body;
+      const { userId, tenantId, userRole } = req;
 
       if (!question) {
         return res.status(400).json({ error: 'Question required' });
@@ -115,6 +115,35 @@ export function createConversationService(deps: LegacyRouteDeps) {
         const aiHeaders = req.headers.authorization
           ? { Authorization: req.headers.authorization as string }
           : undefined;
+        const parsedCourseId = course_id !== undefined && course_id !== null ? Number(course_id) : null;
+        if (userRole === 'STUDENT') {
+          if (!Number.isFinite(parsedCourseId)) {
+            return res.status(400).json({ error: 'course_id is required for student chat' });
+          }
+          const enrolled = await repo.query(
+            `SELECT 1
+             FROM course_enrollments ce
+             JOIN courses c ON c.id = ce.course_id
+             WHERE ce.course_id = $1 AND ce.user_id = $2 AND c.tenant_id = $3
+             LIMIT 1`,
+            [parsedCourseId, userId, tenantId],
+          );
+          if (!enrolled.rows.length) return res.status(403).json({ error: 'Student is not enrolled in this course' });
+        }
+        if (userRole === 'FACULTY' && Number.isFinite(parsedCourseId)) {
+          const assigned = await repo.query(
+            `SELECT 1
+             FROM courses c
+             WHERE c.id = $1 AND c.tenant_id = $2
+               AND (
+                 c.faculty_id = $3
+                 OR EXISTS (SELECT 1 FROM course_instructors ci WHERE ci.course_id = c.id AND ci.user_id = $3)
+               )
+             LIMIT 1`,
+            [parsedCourseId, tenantId, userId],
+          );
+          if (!assigned.rows.length) return res.status(403).json({ error: 'Faculty is not assigned to this course' });
+        }
         let aiResponse: any;
         try {
           aiResponse = await axios.post(
@@ -123,6 +152,7 @@ export function createConversationService(deps: LegacyRouteDeps) {
               message: question,
               conversation_id: convId,
               tenant_id: tenantId,
+              course_id: Number.isFinite(parsedCourseId) ? parsedCourseId : null,
             },
             { timeout: 60000, headers: aiHeaders },
           );
@@ -176,8 +206,8 @@ export function createConversationService(deps: LegacyRouteDeps) {
     },
 
     answer: async (req: AuthRequest, res: Response) => {
-      const { question, document_ids, provider, model, retrieval_strategy, enable_reranking, top_k } = req.body;
-      const { userId, tenantId } = req;
+      const { question, course_id, document_ids, provider, model, retrieval_strategy, enable_reranking, top_k } = req.body;
+      const { userId, tenantId, userRole } = req;
 
       if (!question) {
         return res.status(400).json({ error: 'Question required' });
@@ -187,10 +217,44 @@ export function createConversationService(deps: LegacyRouteDeps) {
         const aiHeaders = req.headers.authorization
           ? { Authorization: req.headers.authorization as string }
           : undefined;
+        const parsedCourseId = course_id !== undefined && course_id !== null ? Number(course_id) : null;
+        if (userRole === 'STUDENT') {
+          if (!Number.isFinite(parsedCourseId)) {
+            return res.status(400).json({ error: 'course_id is required for student chat' });
+          }
+          const enrolled = await repo.query(
+            `SELECT 1
+             FROM course_enrollments ce
+             JOIN courses c ON c.id = ce.course_id
+             WHERE ce.course_id = $1 AND ce.user_id = $2 AND c.tenant_id = $3
+             LIMIT 1`,
+            [parsedCourseId, userId, tenantId],
+          );
+          if (!enrolled.rows.length) return res.status(403).json({ error: 'Student is not enrolled in this course' });
+        }
+        if (userRole === 'FACULTY' && Number.isFinite(parsedCourseId)) {
+          const assigned = await repo.query(
+            `SELECT 1
+             FROM courses c
+             WHERE c.id = $1 AND c.tenant_id = $2
+               AND (
+                 c.faculty_id = $3
+                 OR EXISTS (SELECT 1 FROM course_instructors ci WHERE ci.course_id = c.id AND ci.user_id = $3)
+               )
+             LIMIT 1`,
+            [parsedCourseId, tenantId, userId],
+          );
+          if (!assigned.rows.length) return res.status(403).json({ error: 'Faculty is not assigned to this course' });
+        }
         try {
           const aiResponse = await axios.post(
             `${AI_SERVICE_URL}/api/chat`,
-            { message: question, conversation_id: null, tenant_id: tenantId },
+            {
+              message: question,
+              conversation_id: null,
+              tenant_id: tenantId,
+              course_id: Number.isFinite(parsedCourseId) ? parsedCourseId : null,
+            },
             { timeout: 60000, headers: aiHeaders },
           );
           return res.json(aiResponse.data);

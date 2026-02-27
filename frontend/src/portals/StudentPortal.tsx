@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Navigate, NavLink, Route, Routes, useNavigate, useParams } from 'react-router-dom';
-import { Button, Card, Input, PageHeader, Select, Spinner } from '../components/shared/UI';
+import toast from 'react-hot-toast';
+import { Button, Card, Input, PageHeader, Select, Spinner, Textarea } from '../components/shared/UI';
 import { studentApi, userApi } from '../utils/api';
 import { useAuth } from '../hooks/useAuth';
 import { uiStyles } from '../shared/ui/styleHelpers';
@@ -214,7 +215,10 @@ const COURSE_MENU = [
   { key: 'home', label: 'Home' },
   { key: 'modules', label: 'Modules' },
   { key: 'quizzes', label: 'Quizzes' },
+  { key: 'assignments', label: 'Assignments' },
   { key: 'files', label: 'Files' },
+  { key: 'ai-tutor', label: 'AI Tutor' },
+  { key: 'inbox', label: 'Course Inbox' },
   { key: 'badges', label: 'Badges' },
 ];
 
@@ -395,6 +399,9 @@ function CourseQuizzesSection() {
   const [search, setSearch] = useState('');
   const [quizzes, setQuizzes] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedQuiz, setSelectedQuiz] = useState<Record<string, unknown> | null>(null);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
   useEffect(() => {
     if (!courseId) return;
     setLoading(true);
@@ -403,6 +410,26 @@ function CourseQuizzesSection() {
       .catch(() => setQuizzes([]))
       .finally(() => setLoading(false));
   }, [courseId, search]);
+
+  const openQuiz = async (id: number) => {
+    const result = await userApi.getAssessmentById(id);
+    setSelectedQuiz(result.data ?? null);
+    setAnswers({});
+  };
+
+  const submitQuiz = async () => {
+    if (!selectedQuiz?.id) return;
+    setSubmitting(true);
+    try {
+      const result = await userApi.submitAssessment(Number(selectedQuiz.id), { answers });
+      toast.success(`Submitted. Score: ${result.data?.score ?? 0}%`);
+    } catch {
+      toast.error('Failed to submit quiz');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <CourseFrame section="Quizzes">
       <Card>
@@ -421,9 +448,150 @@ function CourseQuizzesSection() {
               <div style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{Number(quiz.points ?? 100)} pts</div>
             </div>
             <span style={{ color: 'var(--text-muted)', alignSelf: 'center', fontSize: '12px' }}>{String(quiz.status ?? 'not_started')}</span>
-            <Button size="sm">Open</Button>
+            <Button size="sm" onClick={() => openQuiz(Number(quiz.id))}>Open</Button>
           </div>
         ))}
+      </Card>
+      {selectedQuiz && (
+        <Card style={{ marginTop: '12px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+            <h3 style={{ margin: 0, color: 'var(--text-primary)' }}>{String(selectedQuiz.title ?? 'Quiz')}</h3>
+            <Button size="sm" variant="ghost" onClick={() => setSelectedQuiz(null)}>Close</Button>
+          </div>
+          <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
+            {((selectedQuiz.questions ?? []) as Record<string, unknown>[]).map((q) => {
+              const qid = String(q.id);
+              const optionsPayload = q.options as Record<string, unknown> | null;
+              const rawOptions = Array.isArray(optionsPayload?.options)
+                ? optionsPayload?.options
+                : Array.isArray(q.options)
+                  ? (q.options as unknown[])
+                  : [];
+              const questionType = String(q.question_type ?? '').toLowerCase();
+              return (
+                <Card key={qid} style={{ background: 'var(--surface-subtle)' }}>
+                  <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{String(q.question_text)}</div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 4 }}>{String(q.question_type)} • {Number(q.points ?? 1)} pts</div>
+                  <div style={{ marginTop: 8 }}>
+                    {rawOptions.length > 0 ? (
+                      <div style={{ display: 'grid', gap: 6 }}>
+                        {rawOptions.map((opt, idx) => (
+                          <label key={`${qid}-${idx}`} style={{ display: 'flex', gap: 8, alignItems: 'center', color: 'var(--text-primary)' }}>
+                            <input
+                              type={questionType === 'multiple_select' ? 'checkbox' : 'radio'}
+                              name={`q-${qid}`}
+                              checked={answers[qid] === String(opt)}
+                              onChange={() => setAnswers((prev) => ({ ...prev, [qid]: String(opt) }))}
+                            />
+                            <span>{String(opt)}</span>
+                          </label>
+                        ))}
+                      </div>
+                    ) : (
+                      <Textarea
+                        value={answers[qid] ?? ''}
+                        onChange={(e) => setAnswers((prev) => ({ ...prev, [qid]: e.target.value }))}
+                        placeholder="Enter your answer"
+                      />
+                    )}
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <Button loading={submitting} onClick={submitQuiz}>Submit Quiz</Button>
+          </div>
+        </Card>
+      )}
+    </CourseFrame>
+  );
+}
+
+function CourseAssignmentsSection() {
+  const { courseId } = useParams();
+  const [items, setItems] = useState<Record<string, unknown>[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [drafts, setDrafts] = useState<Record<number, { submission_text: string; submission_url: string }>>({});
+
+  const load = () => {
+    if (!courseId) return;
+    setLoading(true);
+    studentApi.getCourseAssignments(Number(courseId))
+      .then((r) => {
+        const assignments = r.data.assignments ?? [];
+        setItems(assignments);
+        const next: Record<number, { submission_text: string; submission_url: string }> = {};
+        assignments.forEach((a: Record<string, unknown>) => {
+          next[Number(a.id)] = {
+            submission_text: '',
+            submission_url: '',
+          };
+        });
+        setDrafts(next);
+      })
+      .catch(() => setItems([]))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, [courseId]);
+
+  const submit = async (assignmentId: number) => {
+    if (!courseId) return;
+    const payload = drafts[assignmentId] ?? { submission_text: '', submission_url: '' };
+    await studentApi.submitCourseAssignment(Number(courseId), assignmentId, payload);
+    load();
+  };
+
+  return (
+    <CourseFrame section="Assignments">
+      <Card>
+        <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>Assignments</h3>
+        {loading ? <div style={uiStyles.loadingCenter}><Spinner /></div> : items.length === 0 ? (
+          <p style={{ margin: 0, color: 'var(--text-muted)' }}>No assignments published for this course.</p>
+        ) : (
+          <div style={{ display: 'grid', gap: '10px' }}>
+            {items.map((item) => {
+              const id = Number(item.id);
+              const draft = drafts[id] ?? { submission_text: '', submission_url: '' };
+              return (
+                <Card key={id} style={{ background: 'var(--surface-subtle)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center' }}>
+                    <div>
+                      <div style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{String(item.title)}</div>
+                      <div style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                        {item.due_at ? `Due: ${new Date(String(item.due_at)).toLocaleString()}` : 'No due date'}
+                      </div>
+                    </div>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{String(item.submission_status ?? 'not_submitted')}</span>
+                  </div>
+                  {Boolean(item.description) && <p style={{ margin: '8px 0 0', color: 'var(--text-secondary)' }}>{String(item.description)}</p>}
+                  {item.score !== null && item.score !== undefined && (
+                    <div style={{ marginTop: '8px', color: 'var(--text-primary)' }}>
+                      Grade: <strong>{String(item.score)}</strong>
+                      {Boolean(item.feedback) && <span style={{ color: 'var(--text-muted)' }}> • Feedback: {String(item.feedback)}</span>}
+                    </div>
+                  )}
+                  <div style={{ marginTop: '10px', display: 'grid', gap: '8px' }}>
+                    <Textarea
+                      value={draft.submission_text}
+                      onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setDrafts((prev) => ({ ...prev, [id]: { ...draft, submission_text: e.target.value } }))}
+                      placeholder="Write your submission notes..."
+                    />
+                    <Input
+                      value={draft.submission_url}
+                      onChange={(e) => setDrafts((prev) => ({ ...prev, [id]: { ...draft, submission_url: e.target.value } }))}
+                      placeholder="Optional link (Drive, GitHub, etc.)"
+                    />
+                    <div>
+                      <Button size="sm" onClick={() => submit(id)}>Submit Assignment</Button>
+                    </div>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        )}
       </Card>
     </CourseFrame>
   );
@@ -531,6 +699,243 @@ function CourseBadgesSection() {
           <h3 style={{ margin: '10px 0', color: 'var(--text-primary)' }}>No badges yet</h3>
           <p style={{ margin: 0, color: 'var(--text-muted)' }}>Complete quizzes and assignments to unlock badges.</p>
         </div>
+      </Card>
+    </CourseFrame>
+  );
+}
+
+function CourseInboxSection() {
+  const { courseId } = useParams();
+  const [threads, setThreads] = useState<Record<string, unknown>[]>([]);
+  const [messages, setMessages] = useState<Record<string, unknown>[]>([]);
+  const [selectedThread, setSelectedThread] = useState<number | null>(null);
+  const [compose, setCompose] = useState({ title: '', body: '' });
+  const [reply, setReply] = useState('');
+
+  const loadThreads = () => {
+    if (!courseId) return;
+    studentApi.getCourseThreads(Number(courseId)).then((r) => setThreads(r.data.threads ?? [])).catch(() => setThreads([]));
+  };
+
+  useEffect(() => { loadThreads(); }, [courseId]);
+
+  const openThread = (threadId: number) => {
+    if (!courseId) return;
+    setSelectedThread(threadId);
+    studentApi.getCourseThreadMessages(Number(courseId), threadId)
+      .then((r) => setMessages(r.data.messages ?? []))
+      .catch(() => setMessages([]));
+  };
+
+  const createThread = async () => {
+    if (!courseId || !compose.title.trim() || !compose.body.trim()) return;
+    await studentApi.createCourseThread(Number(courseId), { title: compose.title.trim(), body: compose.body.trim() });
+    setCompose({ title: '', body: '' });
+    loadThreads();
+  };
+
+  const sendReply = async () => {
+    if (!courseId || !selectedThread || !reply.trim()) return;
+    await studentApi.sendCourseThreadMessage(Number(courseId), selectedThread, reply.trim());
+    setReply('');
+    openThread(selectedThread);
+  };
+
+  return (
+    <CourseFrame section="Course Inbox">
+      <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: '12px' }}>
+        <Card style={{ padding: 0 }}>
+          <div style={{ padding: '10px', borderBottom: '1px solid var(--border-subtle)' }}>
+            <strong style={{ color: 'var(--text-primary)' }}>Threads</strong>
+          </div>
+          <div style={{ padding: '10px', borderBottom: '1px solid var(--border-subtle)', display: 'grid', gap: '8px' }}>
+            <Input value={compose.title} onChange={(e) => setCompose((p) => ({ ...p, title: e.target.value }))} placeholder="New thread title" />
+            <Textarea value={compose.body} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setCompose((p) => ({ ...p, body: e.target.value }))} placeholder="Message to instructor" />
+            <Button size="sm" onClick={createThread}>Start Thread</Button>
+          </div>
+          {threads.length === 0 && <div style={{ padding: '12px', color: 'var(--text-muted)' }}>No threads yet.</div>}
+          {threads.map((thread) => (
+            <button
+              key={String(thread.id)}
+              onClick={() => openThread(Number(thread.id))}
+              style={{
+                width: '100%',
+                textAlign: 'left',
+                padding: '10px',
+                border: 'none',
+                borderBottom: '1px solid var(--border-subtle)',
+                background: Number(thread.id) === selectedThread ? 'var(--brand-soft)' : 'transparent',
+                color: 'var(--text-primary)',
+                cursor: 'pointer',
+              }}
+            >
+              <div style={{ fontWeight: 600 }}>{String(thread.title)}</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{String(thread.snippet ?? '')}</div>
+            </button>
+          ))}
+        </Card>
+        <Card>
+          {!selectedThread ? (
+            <div style={{ textAlign: 'center', padding: '60px 10px', color: 'var(--text-muted)' }}>
+              <div style={{ fontSize: '52px' }}>✉️</div>
+              <p>Select a thread to read and reply.</p>
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gap: '8px' }}>
+              {messages.map((m) => (
+                <div key={String(m.id)} style={{
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: '8px',
+                  padding: '10px',
+                  background: String(m.role) === 'FACULTY' ? 'var(--surface-subtle)' : 'var(--brand-soft)',
+                }}>
+                  <div style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
+                    {`${String(m.first_name ?? '')} ${String(m.last_name ?? '')}`.trim() || String(m.email ?? 'User')}
+                    {' • '}
+                    {new Date(String(m.created_at)).toLocaleString()}
+                  </div>
+                  <div style={{ color: 'var(--text-primary)' }}>{String(m.body)}</div>
+                </div>
+              ))}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '8px' }}>
+                <Input value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Reply..." />
+                <Button onClick={sendReply}>Send</Button>
+              </div>
+            </div>
+          )}
+        </Card>
+      </div>
+    </CourseFrame>
+  );
+}
+
+type TutorMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+  grounded?: boolean;
+  sources?: Array<{ source?: string; snippet?: string; score?: number }>;
+};
+
+function CourseAITutorSection() {
+  const { courseId } = useParams();
+  const [messages, setMessages] = useState<TutorMessage[]>([]);
+  const [question, setQuestion] = useState('');
+  const [conversationId, setConversationId] = useState<number | null>(null);
+  const [sending, setSending] = useState(false);
+
+  const send = async () => {
+    const trimmed = question.trim();
+    const parsedCourseId = Number(courseId);
+    if (!trimmed || !Number.isFinite(parsedCourseId)) return;
+
+    const optimistic: TutorMessage = { role: 'user', content: trimmed };
+    setMessages((prev) => [...prev, optimistic]);
+    setQuestion('');
+    setSending(true);
+    try {
+      const result = await userApi.chat({
+        message: trimmed,
+        conversation_id: conversationId,
+        course_id: parsedCourseId,
+      });
+      if (result.data?.conversation_id) {
+        setConversationId(Number(result.data.conversation_id));
+      }
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: String(result.data?.answer ?? result.data?.response ?? 'No response'),
+          grounded: Boolean(result.data?.grounded ?? true),
+          sources: Array.isArray(result.data?.sources) ? result.data.sources : [],
+        },
+      ]);
+    } catch {
+      toast.error('AI Tutor failed. Please try again.');
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: 'I could not generate an answer right now. Please retry in a moment.',
+          grounded: false,
+          sources: [],
+        },
+      ]);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <CourseFrame section="AI Tutor">
+      <Card>
+        <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>Course AI Tutor</h3>
+        <p style={{ marginTop: 0, color: 'var(--text-muted)' }}>
+          Ask questions in plain English. Answers are grounded in this course&apos;s uploaded documents and lecture links.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '8px' }}>
+          <Input
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            placeholder="Ask about this course content..."
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                if (!sending) void send();
+              }
+            }}
+          />
+          <Button onClick={() => void send()} loading={sending}>Ask</Button>
+        </div>
+      </Card>
+      <Card style={{ marginTop: '12px' }}>
+        {messages.length === 0 ? (
+          <p style={{ margin: 0, color: 'var(--text-muted)' }}>No messages yet. Start by asking a course question.</p>
+        ) : (
+          <div style={{ display: 'grid', gap: '10px' }}>
+            {messages.map((m, idx) => (
+              <div
+                key={`${m.role}-${idx}`}
+                style={{
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: '10px',
+                  padding: '10px',
+                  background: m.role === 'assistant' ? 'var(--surface-subtle)' : 'var(--brand-soft)',
+                }}
+              >
+                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                  {m.role === 'assistant' ? 'AI Tutor' : 'You'}
+                </div>
+                {m.role === 'assistant' && m.grounded === false && (
+                  <div style={{
+                    border: '1px solid color-mix(in srgb, var(--status-warning) 30%, transparent)',
+                    background: 'var(--status-warning-soft)',
+                    color: 'var(--status-warning)',
+                    borderRadius: '8px',
+                    padding: '8px 10px',
+                    fontSize: '13px',
+                    marginBottom: '8px',
+                    fontWeight: 600,
+                  }}>
+                    This answer is not grounded in indexed course sources.
+                  </div>
+                )}
+                <div style={{ color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>{m.content}</div>
+                {m.role === 'assistant' && Array.isArray(m.sources) && m.sources.length > 0 && (
+                  <div style={{ marginTop: '8px', display: 'grid', gap: '6px' }}>
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 600 }}>Sources</div>
+                    {m.sources.slice(0, 5).map((s, sIdx) => (
+                      <div key={sIdx} style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                        <strong style={{ color: 'var(--text-secondary)' }}>{String(s.source ?? 'source')}</strong>
+                        {s.snippet ? `: ${String(s.snippet)}` : ''}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
     </CourseFrame>
   );
@@ -895,7 +1300,10 @@ export default function StudentPortal() {
             <Route path="courses/:courseId/home" element={<CourseHomeSection />} />
             <Route path="courses/:courseId/modules" element={<CourseModulesSection />} />
             <Route path="courses/:courseId/quizzes" element={<CourseQuizzesSection />} />
+            <Route path="courses/:courseId/assignments" element={<CourseAssignmentsSection />} />
             <Route path="courses/:courseId/files" element={<CourseFilesSection />} />
+            <Route path="courses/:courseId/ai-tutor" element={<CourseAITutorSection />} />
+            <Route path="courses/:courseId/inbox" element={<CourseInboxSection />} />
             <Route path="courses/:courseId/badges" element={<CourseBadgesSection />} />
             <Route path="calendar" element={<CalendarPage />} />
             <Route path="inbox" element={<InboxPage />} />

@@ -6,4 +6,5 @@ export interface AuthRequest extends Request {
   userRole?: string;
   isInternal?: boolean;
   requestId?: string;
+  file?: Express.Multer.File;
 }

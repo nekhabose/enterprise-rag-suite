@@ -2,17 +2,12 @@ import type { AuthRequest } from '../../../middleware/types';
 import type { Response } from 'express';
 import type { LegacyRouteDeps } from '../../app/routes/types';
 import { createTenantAdminRepository } from '../repositories/tenantAdminRepository';
+import { TENANT_AI_POLICY_DEFAULTS } from '../../ai/constants/aiOptions';
 
 export function createTenantAdminService(deps: LegacyRouteDeps) {
   const { pool, ROLES, bcrypt, crypto, logAudit } = deps;
   const repo = createTenantAdminRepository(pool);
-  const POLICY_DEFAULTS = {
-    allowed_chunking_strategies: ['semantic'] as string[],
-    allowed_embedding_models: ['minilm'] as string[],
-    allowed_llm_providers: ['groq'] as string[],
-    allowed_retrieval_strategies: ['hybrid'] as string[],
-    allowed_vector_stores: ['postgres'] as string[],
-  };
+  const POLICY_DEFAULTS = TENANT_AI_POLICY_DEFAULTS;
 
   return {
     async dashboard(req: AuthRequest, res: Response) {
@@ -159,10 +154,14 @@ export function createTenantAdminService(deps: LegacyRouteDeps) {
       try {
         const result = await repo.query(
           `SELECT c.*, u.email as faculty_email, u.first_name, u.last_name,
-                  COUNT(DISTINCT e.id) as enrollment_count
+                  COUNT(DISTINCT e.id) as enrollment_count,
+                  ARRAY_REMOVE(ARRAY_AGG(DISTINCT ci.user_id), NULL) as instructor_ids,
+                  ARRAY_REMOVE(ARRAY_AGG(DISTINCT iu.email), NULL) as instructor_emails
            FROM courses c
            LEFT JOIN users u ON c.faculty_id = u.id
            LEFT JOIN course_enrollments e ON e.course_id = c.id
+           LEFT JOIN course_instructors ci ON ci.course_id = c.id
+           LEFT JOIN users iu ON iu.id = ci.user_id
            WHERE c.tenant_id = $1
            GROUP BY c.id, u.email, u.first_name, u.last_name
            ORDER BY c.created_at DESC`,
@@ -176,13 +175,27 @@ export function createTenantAdminService(deps: LegacyRouteDeps) {
 
     async createCourse(req: AuthRequest, res: Response) {
       const { title, description, faculty_id, status } = req.body;
+      const instructorIdsRaw = Array.isArray(req.body?.instructor_ids) ? req.body.instructor_ids : [];
+      const instructorIds = Array.from(new Set(instructorIdsRaw.map((v: unknown) => Number(v)).filter((v: number) => Number.isFinite(v) && v > 0)));
       const tenantId = req.tenantId!;
       if (!title) return res.status(400).json({ error: 'Title required' });
 
       try {
+        if (instructorIds.length) {
+          const valid = await repo.query(
+            `SELECT id FROM users
+             WHERE tenant_id = $1 AND role = $2 AND id = ANY($3::int[])`,
+            [tenantId, ROLES.FACULTY, instructorIds],
+          );
+          if (valid.rows.length !== instructorIds.length) {
+            return res.status(400).json({ error: 'One or more instructors are invalid for this tenant' });
+          }
+        }
+
         const normalizedStatus = ['DRAFT', 'ACTIVE', 'ARCHIVED'].includes(String(status).toUpperCase())
           ? String(status).toUpperCase()
           : 'DRAFT';
+        const primaryFaculty = faculty_id ?? (instructorIds[0] ?? null);
         const result = await repo.query(
           `INSERT INTO courses (tenant_id, title, description, faculty_id, is_active, settings)
            VALUES ($1,$2,$3,$4,$5,$6::jsonb) RETURNING *`,
@@ -190,11 +203,28 @@ export function createTenantAdminService(deps: LegacyRouteDeps) {
             tenantId,
             title,
             description,
-            faculty_id ?? null,
+            primaryFaculty,
             normalizedStatus === 'ACTIVE',
             JSON.stringify({ status: normalizedStatus }),
           ],
         );
+        if (instructorIds.length) {
+          for (const instructorId of instructorIds) {
+            await repo.query(
+              `INSERT INTO course_instructors (course_id, user_id, assigned_at)
+               VALUES ($1,$2,NOW())
+               ON CONFLICT (course_id, user_id) DO NOTHING`,
+              [result.rows[0].id, instructorId],
+            );
+          }
+        } else if (primaryFaculty) {
+          await repo.query(
+            `INSERT INTO course_instructors (course_id, user_id, assigned_at)
+             VALUES ($1,$2,NOW())
+             ON CONFLICT (course_id, user_id) DO NOTHING`,
+            [result.rows[0].id, primaryFaculty],
+          );
+        }
         logAudit(req.userId, tenantId, 'course.create', 'course', result.rows[0].id, { title }, 'info', req);
         return res.status(201).json({ course: result.rows[0] });
       } catch {
@@ -206,13 +236,29 @@ export function createTenantAdminService(deps: LegacyRouteDeps) {
       const courseId = parseInt(req.params.id);
       const tenantId = req.tenantId!;
       const { title, description, is_active, faculty_id, status } = req.body;
+      const hasInstructorIds = Array.isArray(req.body?.instructor_ids);
+      const instructorIds = hasInstructorIds
+        ? Array.from(new Set((req.body.instructor_ids as unknown[]).map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0)))
+        : [];
 
       try {
+        if (hasInstructorIds && instructorIds.length) {
+          const valid = await repo.query(
+            `SELECT id FROM users
+             WHERE tenant_id = $1 AND role = $2 AND id = ANY($3::int[])`,
+            [tenantId, ROLES.FACULTY, instructorIds],
+          );
+          if (valid.rows.length !== instructorIds.length) {
+            return res.status(400).json({ error: 'One or more instructors are invalid for this tenant' });
+          }
+        }
+
         const current = await repo.query('SELECT settings FROM courses WHERE id = $1 AND tenant_id = $2', [courseId, tenantId]);
         if (!current.rows.length) return res.status(404).json({ error: 'Course not found' });
         const currentSettings = (current.rows[0].settings ?? {}) as Record<string, unknown>;
         const normalizedStatus = status ? String(status).toUpperCase() : String(currentSettings.status ?? (is_active ? 'ACTIVE' : 'DRAFT')).toUpperCase();
         const statusSafe = ['DRAFT', 'ACTIVE', 'ARCHIVED'].includes(normalizedStatus) ? normalizedStatus : 'DRAFT';
+        const primaryFaculty = faculty_id ?? (hasInstructorIds ? (instructorIds[0] ?? null) : null);
         const result = await repo.query(
           `UPDATE courses SET
              title = COALESCE($1, title),
@@ -226,13 +272,25 @@ export function createTenantAdminService(deps: LegacyRouteDeps) {
             title,
             description,
             is_active ?? (statusSafe === 'ACTIVE'),
-            faculty_id,
+            primaryFaculty,
             JSON.stringify({ ...currentSettings, status: statusSafe }),
             courseId,
             tenantId,
           ],
         );
         if (!result.rows.length) return res.status(404).json({ error: 'Course not found' });
+
+        if (hasInstructorIds) {
+          await repo.query('DELETE FROM course_instructors WHERE course_id = $1', [courseId]);
+          for (const instructorId of instructorIds) {
+            await repo.query(
+              `INSERT INTO course_instructors (course_id, user_id, assigned_at)
+               VALUES ($1,$2,NOW())
+               ON CONFLICT (course_id, user_id) DO NOTHING`,
+              [courseId, instructorId],
+            );
+          }
+        }
         return res.json({ course: result.rows[0] });
       } catch {
         return res.status(500).json({ error: 'Failed to update course' });

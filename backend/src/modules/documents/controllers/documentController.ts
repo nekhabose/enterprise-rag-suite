@@ -11,5 +11,6 @@ export function createDocumentController(deps: LegacyRouteDeps) {
     list: (req: AuthRequest, res: Response) => service.list(req, res),
     remove: (req: AuthRequest, res: Response) => service.remove(req, res),
     download: (req: AuthRequest, res: Response) => service.download(req, res),
+    preview: (req: AuthRequest, res: Response) => service.preview(req, res),
   };
 }

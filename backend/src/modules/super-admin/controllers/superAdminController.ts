@@ -1,5 +1,6 @@
 import type { LegacyRouteDeps } from '../../app/routes/types';
 import { createSuperAdminService } from '../services/superAdminService';
+import { AI_OPTIONS_CATALOG } from '../../ai/constants/aiOptions';
 
 export function registerSuperAdminController(deps: LegacyRouteDeps) {
   createSuperAdminService(deps);
@@ -9,13 +10,7 @@ export function registerSuperAdminController(deps: LegacyRouteDeps) {
   } = deps;
   type AuthRequest = import('../../../middleware/types').AuthRequest;
   type Response = import('express').Response;
-  const ALLOWED_VALUES = {
-    chunking: ['semantic', 'fixed', 'paragraph'],
-    embedding: ['minilm', 'openai', 'cohere'],
-    llm: ['groq', 'openai', 'anthropic', 'ollama'],
-    retrieval: ['hybrid', 'semantic', 'keyword'],
-    vector: ['postgres', 'pinecone', 'chroma'],
-  } as const;
+  const ALLOWED_VALUES = AI_OPTIONS_CATALOG;
   const normalizeList = (value: unknown, fallback: readonly string[]) => {
     if (!Array.isArray(value)) return [...fallback];
     const set = new Set(

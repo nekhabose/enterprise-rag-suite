@@ -11,4 +11,8 @@ class FactoryEmbedder(BaseEmbedder):
         self._impl = EmbeddingFactory.create(provider, model=model)
 
     def embed(self, texts: List[str]) -> List[List[float]]:
-        return self._impl.embed(texts)
+        if not texts:
+            return []
+        if hasattr(self._impl, "embed_batch"):
+            return self._impl.embed_batch(texts)
+        return [self._impl.embed(t) for t in texts]

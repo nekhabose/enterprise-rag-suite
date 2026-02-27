@@ -240,7 +240,7 @@ function Courses() {
     title: '',
     description: '',
     subject: '',
-    facultyId: '',
+    facultyIds: [] as number[],
     status: 'DRAFT',
     studentIds: [] as number[],
   });
@@ -274,7 +274,8 @@ function Courses() {
         title: form.title,
         description: form.description,
         subject: form.subject,
-        faculty_id: form.facultyId ? Number(form.facultyId) : null,
+        faculty_id: form.facultyIds[0] ?? null,
+        instructor_ids: form.facultyIds,
         status: form.status,
         is_active: form.status === 'ACTIVE',
       };
@@ -307,7 +308,7 @@ function Courses() {
         subtitle={`${courses.length} courses`}
         actions={
           hasPermission('COURSE_WRITE') && (
-            <Button onClick={() => { setEditCourse(null); setForm({ title: '', description: '', subject: '', facultyId: '', status: 'DRAFT', studentIds: [] }); setModalOpen(true); }}>
+            <Button onClick={() => { setEditCourse(null); setForm({ title: '', description: '', subject: '', facultyIds: [], status: 'DRAFT', studentIds: [] }); setModalOpen(true); }}>
               + New Course
             </Button>
           )
@@ -354,6 +355,11 @@ function Courses() {
               {Boolean(course.faculty_email) && (
                 <p style={{ margin: '10px 0 0', color: 'var(--text-secondary)', fontSize: '13px' }}>Faculty: {String(course.faculty_email)}</p>
               )}
+              {Array.isArray(course.instructor_emails) && (course.instructor_emails as unknown[]).length > 0 && (
+                <p style={{ margin: '4px 0 0', color: 'var(--text-secondary)', fontSize: '12px' }}>
+                  Teachers: {(course.instructor_emails as unknown[]).map((email) => String(email)).join(', ')}
+                </p>
+              )}
               <p style={{ margin: '6px 0 0', color: 'var(--text-muted)', fontSize: '12px' }}>
                 Enrollments: {Number(course.enrollment_count ?? 0)}
               </p>
@@ -366,7 +372,9 @@ function Courses() {
                       title: String(course.title ?? ''),
                       description: String(course.description ?? ''),
                       subject: String(course.subject ?? ''),
-                      facultyId: String(course.faculty_id ?? ''),
+                      facultyIds: Array.isArray(course.instructor_ids)
+                        ? (course.instructor_ids as unknown[]).map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)
+                        : (course.faculty_id ? [Number(course.faculty_id)] : []),
                       status: String((course.settings as Record<string, unknown>)?.status ?? (course.is_active ? 'ACTIVE' : 'DRAFT')).toUpperCase(),
                       studentIds: (enr.data?.student_ids ?? []) as number[],
                     });
@@ -384,13 +392,26 @@ function Courses() {
         <form onSubmit={handleSave}>
           <Field label="Title" required><Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required /></Field>
           <Field label="Subject"><Input value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder="e.g. Mathematics" /></Field>
-          <Field label="Assigned Faculty">
-            <Select value={form.facultyId} onChange={(e) => setForm({ ...form, facultyId: e.target.value })}>
-              <option value="">Unassigned</option>
-              {facultyUsers.map((f) => (
-                <option key={String(f.id)} value={String(f.id)}>{String(f.email)}</option>
-              ))}
-            </Select>
+          <Field label="Assign Teachers">
+            <div style={{ maxHeight: '140px', overflowY: 'auto', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '8px' }}>
+              {facultyUsers.map((f) => {
+                const id = Number(f.id);
+                const checked = form.facultyIds.includes(id);
+                return (
+                  <label key={id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', color: 'var(--text-primary)' }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => setForm((prev) => ({
+                        ...prev,
+                        facultyIds: e.target.checked ? [...prev.facultyIds, id] : prev.facultyIds.filter((v) => v !== id),
+                      }))}
+                    />
+                    {String(f.email)}
+                  </label>
+                );
+              })}
+            </div>
           </Field>
           <Field label="Status">
             <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
@@ -533,11 +554,11 @@ function AISettings() {
     vector_store: 'postgres',
   });
   const [allowedOptions, setAllowedOptions] = useState<Record<string, string[]>>({
-    allowed_chunking_strategies: ['semantic'],
-    allowed_embedding_models: ['minilm'],
-    allowed_llm_providers: ['groq'],
-    allowed_retrieval_strategies: ['hybrid'],
-    allowed_vector_stores: ['postgres'],
+    allowed_chunking_strategies: ['semantic', 'fixed', 'fixed_size', 'overlap', 'paragraph', 'page_based', 'parent_child', 'sentence', 'recursive'],
+    allowed_embedding_models: ['minilm', 'openai', 'cohere', 'bge-base', 'e5-large'],
+    allowed_llm_providers: ['groq', 'openai', 'anthropic', 'ollama', 'gemini'],
+    allowed_retrieval_strategies: ['hybrid', 'semantic', 'keyword', 'bm25'],
+    allowed_vector_stores: ['postgres', 'pgvector', 'chroma', 'chromadb', 'pinecone', 'faiss', 'qdrant'],
   });
   const [policyRequired, setPolicyRequired] = useState(false);
   const [loading, setLoading] = useState(true);

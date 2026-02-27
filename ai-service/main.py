@@ -5,6 +5,13 @@ FastAPI application with JWT-based authentication, RBAC, and tenant isolation.
 import os
 import uuid
 import structlog
+import tempfile
+import shutil
+import re
+import json
+import html as html_lib
+import urllib.request
+from urllib.parse import urlparse, parse_qs
 from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -16,6 +23,10 @@ from typing import Optional, List
 from dotenv import load_dotenv
 from src.rag.orchestration.factory import build_rag_engine
 from src.rag.embedding.adapters import FactoryEmbedder
+from src.rag.chunking.adapters import FactoryChunker
+from src.rag.retrieval.postgres_retriever import PostgresKeywordRetriever
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 load_dotenv()
 
@@ -38,6 +49,7 @@ structlog.configure(
 )
 log = structlog.get_logger()
 rag_engine = build_rag_engine()
+retriever_utils = PostgresKeywordRetriever()
 
 # ============================================================
 # APP
@@ -85,8 +97,34 @@ class IngestRequest(BaseModel):
     tenant_id: int
     source_type: str = Field(..., pattern="^(pdf|youtube|web|docx|txt|csv)$")
     source_url: Optional[str] = None
+    video_id: Optional[int] = None
+    course_id: Optional[int] = None
+    title: Optional[str] = None
     subject: Optional[str] = None
     year: Optional[int] = None
+
+class IndexDocumentRequest(BaseModel):
+    document_id: int
+    file_path: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    embedding_model: Optional[str] = None
+    chunking_strategy: Optional[str] = None
+
+class IndexVideoUploadRequest(BaseModel):
+    video_id: int
+    file_path: Optional[str] = None
+    chunking_strategy: Optional[str] = None
+    embedding_model: Optional[str] = None
+
+class IngestWebRequest(BaseModel):
+    tenant_id: int
+    course_id: Optional[int] = None
+    url: str
+    video_id: Optional[int] = None
+    title: Optional[str] = None
+    chunking_strategy: Optional[str] = None
+    embedding_model: Optional[str] = None
 
 class QuizRequest(BaseModel):
     tenant_id: int
@@ -98,6 +136,270 @@ class QuizRequest(BaseModel):
 class EmbedRequest(BaseModel):
     texts: List[str] = Field(..., max_items=100)
     tenant_id: int
+
+
+def _first_scalar(value):
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
+def _normalize_chunking(value: Optional[str]) -> str:
+    raw = str(_first_scalar(value) or "semantic").strip().lower()
+    mapping = {
+        "fixed": "fixed_size",
+        "fixed_size": "fixed_size",
+        "semantic": "semantic",
+        "paragraph": "paragraph",
+        "page": "page_based",
+        "page_based": "page_based",
+        "overlap": "overlap",
+        "parent_child": "parent_child",
+        "recursive": "recursive",
+        "sentence": "sentence",
+    }
+    return mapping.get(raw, "semantic")
+
+
+def _resolve_embedding_provider_model(cfg: dict, override_model: Optional[str] = None):
+    raw_model = _first_scalar(override_model) or _first_scalar(cfg.get("embedding_model")) or "minilm"
+    model = str(raw_model).strip()
+    provider_raw = _first_scalar(cfg.get("embedding_provider"))
+    provider = str(provider_raw).strip().lower() if provider_raw else ""
+    if not provider:
+        lowered = model.lower()
+        if lowered in ("minilm", "all-minilm-l6-v2"):
+            provider = "sentence_transformer"
+            model = "all-MiniLM-L6-v2"
+        elif lowered.startswith("text-embedding") or lowered == "openai":
+            provider = "openai"
+        elif lowered.startswith("embed-") or lowered == "cohere":
+            provider = "cohere"
+        else:
+            provider = "sentence_transformer"
+            model = "all-MiniLM-L6-v2"
+    if provider == "sentence_transformer" and model.lower() == "minilm":
+        model = "all-MiniLM-L6-v2"
+    return provider, model
+
+
+def _coerce_pgvector_dim(vec: List[float], dim: int = 1536) -> List[float]:
+    if len(vec) == dim:
+        return vec
+    if len(vec) > dim:
+        return vec[:dim]
+    return vec + [0.0] * (dim - len(vec))
+
+
+def _extract_video_id(url: str) -> Optional[str]:
+    try:
+        parsed = urlparse(url)
+        if "youtu.be" in parsed.netloc:
+            vid = parsed.path.strip("/").split("/")[0]
+            return vid or None
+        if "youtube.com" in parsed.netloc:
+            qs = parse_qs(parsed.query)
+            if qs.get("v"):
+                return qs["v"][0]
+            m = re.search(r"/shorts/([A-Za-z0-9_-]{6,})", parsed.path)
+            if m:
+                return m.group(1)
+        return None
+    except Exception:
+        return None
+
+
+def _youtube_transcript(url: str, video_id: int) -> str:
+    ytid = _extract_video_id(url)
+    if not ytid:
+        return ""
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        transcript = YouTubeTranscriptApi.get_transcript(ytid, languages=["en"])
+        joined = " ".join([str(x.get("text") or "").strip() for x in transcript])
+        cleaned = re.sub(r"\s+", " ", joined).strip()
+        if cleaned:
+            return cleaned
+    except Exception:
+        pass
+
+    temp_dir = tempfile.mkdtemp(prefix="yt_ingest_")
+    audio_path = os.path.join(temp_dir, f"video_{video_id}.mp3")
+    try:
+        import yt_dlp
+        import whisper
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }],
+            "outtmpl": os.path.join(temp_dir, f"video_{video_id}.%(ext)s"),
+            "quiet": True,
+            "no_warnings": True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        if not os.path.exists(audio_path):
+            return ""
+        model = whisper.load_model("base")
+        result = model.transcribe(audio_path, verbose=False)
+        return re.sub(r"\s+", " ", str(result.get("text") or "")).strip()
+    except Exception:
+        return ""
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _scrape_web_text(url: str) -> str:
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "EduLMSBot/1.0 (+https://edulms.local)"},
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        raw = resp.read().decode("utf-8", errors="ignore")
+    no_script = re.sub(r"(?is)<script.*?>.*?</script>", " ", raw)
+    no_style = re.sub(r"(?is)<style.*?>.*?</style>", " ", no_script)
+    text = re.sub(r"(?is)<[^>]+>", " ", no_style)
+    text = html_lib.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _get_db_conn():
+    db_url = os.getenv("DATABASE_URL", "").strip()
+    if not db_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+    return psycopg2.connect(db_url)
+
+
+def _index_into_selected_store(
+    vector_store: str,
+    tenant_id: int,
+    course_id: Optional[int],
+    ids: List[str],
+    vectors: List[List[float]],
+    metadatas: List[dict],
+) -> Optional[str]:
+    store_name = str(_first_scalar(vector_store) or "postgres").strip().lower()
+    if store_name in ("postgres", "pgvector"):
+        return None
+    try:
+        from vector_stores.vector_store_factory import VectorStoreFactory
+        dimension = len(vectors[0]) if vectors else 384
+        kwargs = {}
+        if store_name in ("chroma", "chromadb"):
+            kwargs["collection_name"] = f"tenant_{tenant_id}_course_{course_id or 0}"
+            kwargs["persist_directory"] = os.path.join("data", "chroma")
+        elif store_name.startswith("faiss"):
+            os.makedirs(os.path.join("data", "faiss"), exist_ok=True)
+            kwargs["storage_path"] = os.path.join("data", "faiss", f"tenant_{tenant_id}_course_{course_id or 0}")
+        store = VectorStoreFactory.create(
+            strategy=store_name,
+            dimension=dimension,
+            db_connection_string=os.getenv("DATABASE_URL", ""),
+            **kwargs,
+        )
+        ok = store.add(ids=ids, vectors=vectors, metadata=metadatas)
+        if hasattr(store, "save"):
+            try:
+                store.save()
+            except Exception:
+                pass
+        if not ok:
+            return f"Failed to add vectors to selected store '{store_name}'"
+        return None
+    except Exception as exc:
+        return f"Selected vector store '{store_name}' indexing warning: {exc}"
+
+
+def _chunk_embed_store(
+    *,
+    tenant_id: int,
+    text: str,
+    source_label: str,
+    source_kind: str,
+    source_id: int,
+    course_id: Optional[int],
+    cfg: dict,
+    override_chunking: Optional[str] = None,
+    override_embedding_model: Optional[str] = None,
+) -> dict:
+    content = re.sub(r"\s+", " ", text or "").strip()
+    if not content:
+        return {"chunks_created": 0, "warnings": ["No extractable content found"], "chunking_strategy": None, "vector_store": cfg.get("vector_store")}
+
+    chunking_strategy = _normalize_chunking(override_chunking or cfg.get("chunking_strategy"))
+    chunker = FactoryChunker(chunking_strategy)
+    chunks = [c.strip() for c in chunker.chunk(content) if c and str(c).strip()]
+    if not chunks:
+        return {"chunks_created": 0, "warnings": ["No chunks generated from content"], "chunking_strategy": chunking_strategy, "vector_store": cfg.get("vector_store")}
+
+    provider, model = _resolve_embedding_provider_model(cfg, override_embedding_model)
+    embedder = FactoryEmbedder(provider=provider, model=model)
+    vectors = embedder.embed(chunks)
+
+    vector_store = str(_first_scalar(cfg.get("vector_store")) or "postgres").strip().lower()
+    ids = [f"{source_kind}:{source_id}:{idx}" for idx in range(len(chunks))]
+    metadata_rows = [
+      {
+        "source": source_label,
+        "source_kind": source_kind,
+        "source_id": source_id,
+        "tenant_id": tenant_id,
+        "course_id": course_id,
+        "chunk_index": idx,
+        "content": chunk,
+      }
+      for idx, chunk in enumerate(chunks)
+    ]
+
+    warnings: List[str] = []
+    try:
+        with _get_db_conn() as conn:
+            with conn.cursor() as cur:
+                if source_kind == "document":
+                    cur.execute("DELETE FROM chunks WHERE document_id = %s", [source_id])
+                    insert_sql = """
+                        INSERT INTO chunks (document_id, tenant_id, content, embedding, chunk_index, metadata)
+                        VALUES (%s,%s,%s,%s::vector,%s,%s::jsonb)
+                    """
+                    for idx, (chunk, vec) in enumerate(zip(chunks, vectors)):
+                        vec1536 = _coerce_pgvector_dim([float(x) for x in vec], dim=1536)
+                        cur.execute(insert_sql, [source_id, tenant_id, chunk, vec1536, idx, json.dumps({"source": source_label, "vector_store": vector_store})])
+                else:
+                    cur.execute("DELETE FROM chunks WHERE video_id = %s", [source_id])
+                    insert_sql = """
+                        INSERT INTO chunks (video_id, tenant_id, content, embedding, chunk_index, metadata)
+                        VALUES (%s,%s,%s,%s::vector,%s,%s::jsonb)
+                    """
+                    for idx, (chunk, vec) in enumerate(zip(chunks, vectors)):
+                        vec1536 = _coerce_pgvector_dim([float(x) for x in vec], dim=1536)
+                        cur.execute(insert_sql, [source_id, tenant_id, chunk, vec1536, idx, json.dumps({"source": source_label, "vector_store": vector_store})])
+                conn.commit()
+    except psycopg2.errors.ForeignKeyViolation:
+        return {
+            "chunks_created": 0,
+            "chunking_strategy": chunking_strategy,
+            "embedding_provider": provider,
+            "embedding_model": model,
+            "vector_store": vector_store,
+            "warnings": [f"Source {source_kind}:{source_id} no longer exists while indexing"],
+            "failed": True,
+        }
+
+    warn = _index_into_selected_store(vector_store, tenant_id, course_id, ids, vectors, metadata_rows)
+    if warn:
+        warnings.append(warn)
+
+    return {
+        "chunks_created": len(chunks),
+        "chunking_strategy": chunking_strategy,
+        "embedding_provider": provider,
+        "embedding_model": model,
+        "vector_store": vector_store,
+        "warnings": warnings,
+    }
 
 
 # ============================================================
@@ -130,14 +432,21 @@ async def chat(
         user_id=user.id,
         tenant_id=body.tenant_id,
         conversation_id=body.conversation_id,
+        course_id=body.course_id,
     )
 
-    rag_result = rag_engine.answer(body.tenant_id, body.message)
+    rag_result = rag_engine.answer(body.tenant_id, body.message, body.course_id)
 
     return {
         "response": rag_result["response"],
         "conversation_id": body.conversation_id or 1,
         "sources": rag_result["sources"],
+        "grounded": rag_result.get("grounded", True),
+        "provider_used": rag_result.get("provider_used"),
+        "model_used": rag_result.get("model_used"),
+        "retrieval_strategy_used": rag_result.get("retrieval_strategy_used"),
+        "vector_store_used": rag_result.get("vector_store_used"),
+        "chunking_strategy_used": rag_result.get("chunking_strategy_used"),
         "tokens_used": len(body.message.split()),
     }
 
@@ -208,18 +517,220 @@ async def ingest_youtube(
 ):
     if not tenant_scoped(user, body.tenant_id):
         raise HTTPException(status_code=403, detail="Tenant access denied")
+    if not body.video_id:
+        raise HTTPException(status_code=422, detail="video_id required")
 
     if not body.source_url or "youtube.com" not in body.source_url and "youtu.be" not in body.source_url:
         raise HTTPException(status_code=422, detail="Valid YouTube URL required")
 
     log.info("youtube_ingest", user_id=user.id, tenant_id=body.tenant_id, url=body.source_url)
 
-    ingest_result = rag_engine.ingest(body.tenant_id, body.source_url or "youtube", f"Transcript placeholder: {body.source_url}")
+    cfg = rag_engine._get_tenant_ai_settings(body.tenant_id)
+    transcript = _youtube_transcript(body.source_url, body.video_id or 0)
+    if not transcript:
+        raise HTTPException(status_code=422, detail="Unable to extract transcript from YouTube URL")
+    ingest_result = _chunk_embed_store(
+        tenant_id=body.tenant_id,
+        text=transcript,
+        source_label=body.title or body.source_url,
+        source_kind="video",
+        source_id=int(body.video_id),
+        course_id=body.course_id,
+        cfg=cfg,
+        override_chunking=body.source_type if body.source_type in ("fixed", "fixed_size", "semantic", "paragraph", "page_based", "overlap", "parent_child", "sentence", "recursive") else None,
+    )
+    if body.video_id:
+        with _get_db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE videos SET transcript = %s WHERE id = %s", [transcript, body.video_id])
+                conn.commit()
     return {
-        "status": "queued",
-        "video_id": None,
-        "chunks": ingest_result["chunks"],
-        "message": "YouTube video queued for transcript extraction and embedding",
+        "status": "indexed",
+        "video_id": body.video_id,
+        "chunks": ingest_result["chunks_created"],
+        "message": "YouTube video transcript indexed",
+        "warnings": ingest_result.get("warnings", []),
+    }
+
+
+@app.post("/ai/index-document")
+@limiter.limit("20/minute")
+async def index_document(
+    request: Request,
+    body: IndexDocumentRequest,
+    user: AuthenticatedUser = Depends(require_permission("DOCUMENT_WRITE")),
+):
+    with _get_db_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, tenant_id, course_id, filename, file_path FROM documents WHERE id = %s",
+                [body.document_id],
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Document not found")
+            tenant_id = int(row["tenant_id"])
+            if not tenant_scoped(user, tenant_id):
+                raise HTTPException(status_code=403, detail="Tenant access denied")
+            file_path = body.file_path or row.get("file_path")
+            if not file_path or not os.path.exists(file_path):
+                raise HTTPException(status_code=422, detail="Document file path not found on disk")
+            text = retriever_utils._extract_document_text(str(file_path), str(row.get("filename") or "document"))
+            cfg = rag_engine._get_tenant_ai_settings(tenant_id)
+            ingest = _chunk_embed_store(
+                tenant_id=tenant_id,
+                text=text,
+                source_label=str(row.get("filename") or f"document:{body.document_id}"),
+                source_kind="document",
+                source_id=int(body.document_id),
+                course_id=int(row["course_id"]) if row.get("course_id") is not None else None,
+                cfg=cfg,
+                override_chunking=body.chunking_strategy,
+                override_embedding_model=body.embedding_model,
+            )
+            if ingest.get("failed"):
+                raise HTTPException(status_code=409, detail=ingest.get("warnings", ["Indexing failed"])[0])
+            cur.execute("UPDATE documents SET is_indexed = true WHERE id = %s", [body.document_id])
+            conn.commit()
+            return {
+                "status": "indexed",
+                "document_id": body.document_id,
+                "chunks_created": ingest["chunks_created"],
+                "vector_store": ingest["vector_store"],
+                "chunking_strategy": ingest["chunking_strategy"],
+                "warnings": ingest.get("warnings", []),
+            }
+
+
+@app.post("/ai/ingest-youtube")
+@limiter.limit("10/minute")
+async def ingest_youtube_legacy(
+    request: Request,
+    body: IngestRequest,
+    user: AuthenticatedUser = Depends(require_permission("VIDEO_WRITE")),
+):
+    if not body.video_id:
+        raise HTTPException(status_code=422, detail="video_id required")
+    if not body.source_url:
+        raise HTTPException(status_code=422, detail="youtube_url required")
+    if not tenant_scoped(user, body.tenant_id):
+        raise HTTPException(status_code=403, detail="Tenant access denied")
+    transcript = _youtube_transcript(body.source_url, body.video_id)
+    if not transcript:
+        raise HTTPException(status_code=422, detail="Could not extract transcript from YouTube URL")
+    with _get_db_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, course_id, tenant_id FROM videos WHERE id = %s", [body.video_id])
+            video = cur.fetchone()
+            if not video:
+                raise HTTPException(status_code=404, detail="Video not found")
+            cfg = rag_engine._get_tenant_ai_settings(int(video["tenant_id"]))
+            ingest = _chunk_embed_store(
+                tenant_id=int(video["tenant_id"]),
+                text=transcript,
+                source_label=body.title or body.source_url,
+                source_kind="video",
+                source_id=body.video_id,
+                course_id=int(video["course_id"]) if video.get("course_id") is not None else body.course_id,
+                cfg=cfg,
+                override_chunking=body.source_type if body.source_type in ("fixed", "fixed_size", "semantic", "paragraph", "page_based", "overlap", "parent_child", "sentence", "recursive") else None,
+            )
+            cur.execute("UPDATE videos SET transcript = %s WHERE id = %s", [transcript, body.video_id])
+            conn.commit()
+    return {
+        "status": "indexed",
+        "video_id": body.video_id,
+        "chunks_created": ingest["chunks_created"],
+        "warnings": ingest.get("warnings", []),
+    }
+
+
+@app.post("/ai/index-video-upload")
+@limiter.limit("10/minute")
+async def index_video_upload(
+    request: Request,
+    body: IndexVideoUploadRequest,
+    user: AuthenticatedUser = Depends(require_permission("VIDEO_WRITE")),
+):
+    with _get_db_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, tenant_id, course_id, title, file_path FROM videos WHERE id = %s",
+                [body.video_id],
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Video not found")
+            tenant_id = int(row["tenant_id"])
+            if not tenant_scoped(user, tenant_id):
+                raise HTTPException(status_code=403, detail="Tenant access denied")
+            file_path = body.file_path or row.get("file_path")
+            if not file_path or not os.path.exists(str(file_path)):
+                raise HTTPException(status_code=422, detail="Uploaded lecture file not found on disk")
+            transcript = PostgresKeywordRetriever._transcribe_uploaded_video(str(file_path))
+            if not transcript:
+                raise HTTPException(status_code=422, detail="Could not transcribe uploaded lecture recording")
+            cfg = rag_engine._get_tenant_ai_settings(tenant_id)
+            ingest = _chunk_embed_store(
+                tenant_id=tenant_id,
+                text=transcript,
+                source_label=str(row.get("title") or f"video:{body.video_id}"),
+                source_kind="video",
+                source_id=int(body.video_id),
+                course_id=int(row["course_id"]) if row.get("course_id") is not None else None,
+                cfg=cfg,
+                override_chunking=body.chunking_strategy,
+                override_embedding_model=body.embedding_model,
+            )
+            cur.execute("UPDATE videos SET transcript = %s WHERE id = %s", [transcript, body.video_id])
+            conn.commit()
+            return {
+                "status": "indexed",
+                "video_id": body.video_id,
+                "chunks_created": ingest["chunks_created"],
+                "warnings": ingest.get("warnings", []),
+            }
+
+
+@app.post("/ai/ingest-web")
+@limiter.limit("10/minute")
+async def ingest_web(
+    request: Request,
+    body: IngestWebRequest,
+    user: AuthenticatedUser = Depends(require_permission("VIDEO_WRITE")),
+):
+    if not body.video_id:
+        raise HTTPException(status_code=422, detail="video_id is required for web link ingestion")
+    if not tenant_scoped(user, body.tenant_id):
+        raise HTTPException(status_code=403, detail="Tenant access denied")
+    parsed = urlparse(body.url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=422, detail="Only http/https URLs are allowed")
+    text = _scrape_web_text(body.url)
+    if not text:
+        raise HTTPException(status_code=422, detail="Could not extract readable text from URL")
+    cfg = rag_engine._get_tenant_ai_settings(body.tenant_id)
+    source_id = int(body.video_id)
+    with _get_db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE videos SET transcript = %s WHERE id = %s", [text, body.video_id])
+            conn.commit()
+    ingest = _chunk_embed_store(
+        tenant_id=body.tenant_id,
+        text=text,
+        source_label=body.title or body.url,
+        source_kind="video",
+        source_id=source_id,
+        course_id=body.course_id,
+        cfg=cfg,
+        override_chunking=body.chunking_strategy,
+        override_embedding_model=body.embedding_model,
+    )
+    return {
+        "status": "indexed",
+        "url": body.url,
+        "chunks_created": ingest["chunks_created"],
+        "warnings": ingest.get("warnings", []),
     }
 
 
@@ -294,11 +805,11 @@ async def create_embeddings(
 # ============================================================
 class AISettingsUpdate(BaseModel):
     tenant_id: int
-    chunking_strategy: Optional[str] = Field(None, pattern="^(fixed|semantic|paragraph)$")
-    embedding_model: Optional[str] = Field(None, pattern="^(minilm|openai|cohere)$")
-    llm_provider: Optional[str] = Field(None, pattern="^(groq|openai|anthropic|ollama)$")
-    retrieval_strategy: Optional[str] = Field(None, pattern="^(semantic|keyword|hybrid)$")
-    vector_store: Optional[str] = Field(None, pattern="^(postgres|pinecone|chroma)$")
+    chunking_strategy: Optional[str] = None
+    embedding_model: Optional[str] = None
+    llm_provider: Optional[str] = None
+    retrieval_strategy: Optional[str] = None
+    vector_store: Optional[str] = None
 
 @app.put("/api/ai-settings")
 async def update_ai_settings(

@@ -25,10 +25,12 @@ ROLE_PERMISSIONS = {
         "CHAT_USE", "COURSE_READ", "COURSE_WRITE",
         "KB_READ", "KB_WRITE", "AI_SETTINGS_UPDATE",
         "DOCUMENT_READ", "DOCUMENT_WRITE",
+        "VIDEO_READ", "VIDEO_WRITE",
     ],
     "FACULTY": [
         "CHAT_USE", "COURSE_READ", "COURSE_WRITE",
         "KB_READ", "KB_WRITE", "DOCUMENT_READ", "DOCUMENT_WRITE",
+        "VIDEO_READ", "VIDEO_WRITE",
     ],
     "STUDENT": ["CHAT_USE", "COURSE_READ", "KB_READ", "DOCUMENT_READ"],
 }
@@ -36,12 +38,20 @@ ROLE_PERMISSIONS = {
 
 class AuthenticatedUser:
     def __init__(self, payload: dict):
-        self.id: int = payload["sub"]
-        self.email: str = payload["email"]
-        self.role: str = payload["role"]
-        self.tenant_id: Optional[int] = payload.get("tenantId")
-        self.permissions: List[str] = payload.get("permissions", [])
-        self.is_impersonating: bool = payload.get("isImpersonating", False)
+        user_id = payload.get("sub", payload.get("userId", payload.get("id")))
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Token missing user identifier")
+        self.id: int = int(user_id)
+
+        self.email: str = str(payload.get("email", "unknown@local"))
+        self.role: str = str(payload.get("role", payload.get("userRole", "STUDENT")))
+
+        tenant_raw = payload.get("tenantId", payload.get("tenant_id"))
+        self.tenant_id: Optional[int] = int(tenant_raw) if tenant_raw is not None else None
+
+        perms = payload.get("permissions", [])
+        self.permissions: List[str] = perms if isinstance(perms, list) else []
+        self.is_impersonating: bool = bool(payload.get("isImpersonating", payload.get("is_impersonating", False)))
 
     def has_permission(self, perm: str) -> bool:
         role_perms = ROLE_PERMISSIONS.get(self.role, [])
@@ -57,8 +67,10 @@ def verify_jwt(token: str) -> dict:
             token,
             JWT_SECRET,
             algorithms=[JWT_ALGORITHM],
-            options={"require": ["sub", "exp", "iat"]},
+            options={"require": ["exp"]},
         )
+        if payload.get("sub") is None and payload.get("userId") is None and payload.get("id") is None:
+            raise HTTPException(status_code=401, detail="Token missing subject/userId")
         return payload
     except JWTError as e:
         log.warning("jwt_validation_failed", error=str(e))

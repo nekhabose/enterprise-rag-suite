@@ -7,8 +7,25 @@ const api = axios.create({
 });
 
 let _accessToken: string | null = null;
+let _refreshToken: string | null = null;
 export const setAccessToken = (token: string | null) => { _accessToken = token; };
 export const getAccessToken = () => _accessToken;
+export const setRefreshToken = (token: string | null) => {
+  _refreshToken = token;
+  try {
+    if (token) window.localStorage.setItem('lms_refresh_token', token);
+    else window.localStorage.removeItem('lms_refresh_token');
+  } catch {}
+};
+export const getRefreshToken = () => {
+  if (_refreshToken) return _refreshToken;
+  try {
+    _refreshToken = window.localStorage.getItem('lms_refresh_token');
+  } catch {
+    _refreshToken = null;
+  }
+  return _refreshToken;
+};
 
 api.interceptors.request.use((config) => {
   if (_accessToken) {
@@ -24,13 +41,16 @@ api.interceptors.response.use(
     if (error.response?.status === 401 && !original._retry) {
       original._retry = true;
       try {
-        const res = await axios.post('/api/auth/refresh', {}, { withCredentials: true });
+        const refreshToken = getRefreshToken();
+        const res = await axios.post('/api/auth/refresh', refreshToken ? { refreshToken } : {}, { withCredentials: true });
         const newToken = res.data.accessToken ?? res.data.token;
+        if (!newToken) throw new Error('No refreshed access token');
         setAccessToken(newToken);
         original.headers.Authorization = `Bearer ${newToken}`;
         return api(original);
       } catch {
         setAccessToken(null);
+        setRefreshToken(null);
         window.location.href = '/login';
       }
     }
@@ -41,9 +61,24 @@ api.interceptors.response.use(
 export default api;
 
 export const authApi = {
-  login: (email: string, password: string) => api.post('/auth/login', { email, password }),
-  logout: () => api.post('/auth/logout'),
-  refresh: () => api.post('/auth/refresh'),
+  login: async (email: string, password: string) => {
+    const res = await api.post('/auth/login', { email, password });
+    const accessToken = res.data.accessToken ?? res.data.token ?? null;
+    const refreshToken = res.data.refreshToken ?? null;
+    if (accessToken) setAccessToken(accessToken);
+    if (refreshToken) setRefreshToken(refreshToken);
+    return res;
+  },
+  logout: async () => {
+    const res = await api.post('/auth/logout');
+    setAccessToken(null);
+    setRefreshToken(null);
+    return res;
+  },
+  refresh: () => {
+    const refreshToken = getRefreshToken();
+    return api.post('/auth/refresh', refreshToken ? { refreshToken } : {});
+  },
   me: () => api.get('/auth/me'),
 };
 
@@ -108,12 +143,16 @@ export const userApi = {
     headers: { 'Content-Type': 'multipart/form-data' }
   }),
   uploadYoutube: (data: Record<string, unknown>) => api.post('/videos/upload', data),
+  uploadLectureRecording: (formData: FormData) => api.post('/videos/upload-file', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  }),
   deleteDocument: (id: number) => api.delete(`/documents/${id}`),
   deleteVideo: (id: number) => api.delete(`/videos/${id}`),
   chat: (data: Record<string, unknown>) =>
     api.post('/chat/send', {
       question: data.message ?? data.question,
       conversation_id: data.conversationId ?? data.conversation_id,
+      course_id: data.course_id ?? null,
       document_ids: data.document_ids ?? null,
       provider: data.provider ?? null,
       model: data.model ?? null,
@@ -124,6 +163,7 @@ export const userApi = {
   getConversations: () => api.get('/conversations'),
   getConversation: (id: number) => api.get(`/conversations/${id}/messages`),
   getAssessments: () => api.get('/assessments'),
+  getAssessmentById: (id: number) => api.get(`/assessments/${id}`),
   submitAssessment: (id: number, data: Record<string, unknown>) =>
     api.post(`/assessments/${id}/submit`, data),
   getProgress: () => api.get('/portal/progress'),
@@ -146,6 +186,15 @@ export const studentApi = {
     api.get(`/student/courses/${courseId}/quizzes`, { params }),
   getCourseFiles: (courseId: number, params?: Record<string, unknown>) =>
     api.get(`/student/courses/${courseId}/files`, { params }),
+  getCourseAssignments: (courseId: number) => api.get(`/student/courses/${courseId}/assignments`),
+  submitCourseAssignment: (courseId: number, assignmentId: number, data: Record<string, unknown>) =>
+    api.post(`/student/courses/${courseId}/assignments/${assignmentId}/submit`, data),
+  getCourseThreads: (courseId: number) => api.get(`/student/courses/${courseId}/inbox/threads`),
+  createCourseThread: (courseId: number, data: Record<string, unknown>) => api.post(`/student/courses/${courseId}/inbox/threads`, data),
+  getCourseThreadMessages: (courseId: number, threadId: number) =>
+    api.get(`/student/courses/${courseId}/inbox/threads/${threadId}`),
+  sendCourseThreadMessage: (courseId: number, threadId: number, body: string) =>
+    api.post(`/student/courses/${courseId}/inbox/threads/${threadId}/messages`, { body }),
 };
 
 export const facultyApi = {
@@ -165,13 +214,24 @@ export const facultyApi = {
     api.put(`/faculty/courses/${courseId}/modules/${moduleId}/items/${itemId}`, data),
   reorderModuleItems: (courseId: number, moduleId: number, item_ids: number[]) =>
     api.put(`/faculty/courses/${courseId}/modules/${moduleId}/items/reorder`, { item_ids }),
+  moveModuleItem: (courseId: number, itemId: number, target_module_id: number) =>
+    api.put(`/faculty/courses/${courseId}/modules/items/${itemId}/move`, { target_module_id }),
   getCourseFiles: (courseId: number) => api.get(`/faculty/courses/${courseId}/files`),
   attachFileToModule: (courseId: number, data: Record<string, unknown>) => api.post(`/faculty/courses/${courseId}/files/attach`, data),
   getCourseQuizzes: (courseId: number, params?: Record<string, unknown>) => api.get(`/faculty/courses/${courseId}/quizzes`, { params }),
   createManualQuiz: (courseId: number, data: Record<string, unknown>) => api.post(`/faculty/courses/${courseId}/quizzes/manual`, data),
   generateQuiz: (courseId: number, data: Record<string, unknown>) => api.post(`/faculty/courses/${courseId}/quizzes/generate`, data),
+  getCourseQuizDetail: (courseId: number, assessmentId: number) => api.get(`/faculty/courses/${courseId}/quizzes/${assessmentId}`),
+  regenerateQuizQuestion: (courseId: number, assessmentId: number, questionId: number, data?: Record<string, unknown>) =>
+    api.put(`/faculty/courses/${courseId}/quizzes/${assessmentId}/questions/${questionId}/regenerate`, data ?? {}),
+  updateQuizQuestion: (courseId: number, assessmentId: number, questionId: number, data: Record<string, unknown>) =>
+    api.put(`/faculty/courses/${courseId}/quizzes/${assessmentId}/questions/${questionId}`, data),
   publishQuiz: (courseId: number, assessmentId: number, data: Record<string, unknown>) =>
     api.put(`/faculty/courses/${courseId}/quizzes/${assessmentId}/publish`, data),
+  duplicateQuiz: (courseId: number, assessmentId: number) =>
+    api.post(`/faculty/courses/${courseId}/quizzes/${assessmentId}/duplicate`),
+  deleteQuiz: (courseId: number, assessmentId: number) =>
+    api.delete(`/faculty/courses/${courseId}/quizzes/${assessmentId}`),
   getAssignments: (courseId: number) => api.get(`/faculty/courses/${courseId}/assignments`),
   createAssignment: (courseId: number, data: Record<string, unknown>) => api.post(`/faculty/courses/${courseId}/assignments`, data),
   getAssignmentSubmissions: (courseId: number, assignmentId: number) => api.get(`/faculty/courses/${courseId}/assignments/${assignmentId}/submissions`),

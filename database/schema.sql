@@ -188,7 +188,11 @@ CREATE TABLE IF NOT EXISTS videos (
     user_id INT REFERENCES users(id),
     tenant_id INT REFERENCES tenants(id),
     title VARCHAR(255),
+    source_type VARCHAR(20) DEFAULT 'youtube',
     youtube_url TEXT,
+    file_path TEXT,
+    mime_type VARCHAR(120),
+    file_size_bytes BIGINT,
     duration INT,
     transcript TEXT,
     subject VARCHAR(100),
@@ -347,6 +351,14 @@ CREATE TABLE IF NOT EXISTS course_inbox_messages (
     sender_id INT NOT NULL REFERENCES users(id),
     body TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS course_instructors (
+    id SERIAL PRIMARY KEY,
+    course_id INT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    assigned_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(course_id, user_id)
 );
 
 -- ============================================================
@@ -588,6 +600,7 @@ CREATE INDEX IF NOT EXISTS idx_assignments_course ON assignments(course_id, due_
 CREATE INDEX IF NOT EXISTS idx_assignment_submissions_assignment ON assignment_submissions(assignment_id, student_id);
 CREATE INDEX IF NOT EXISTS idx_course_inbox_threads_course ON course_inbox_threads(course_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_course_inbox_messages_thread ON course_inbox_messages(thread_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_course_instructors_course ON course_instructors(course_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_invitations_token ON invitations(token);
 
 -- ============================================================
