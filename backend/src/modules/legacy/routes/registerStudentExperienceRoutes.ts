@@ -442,6 +442,66 @@ export function registerStudentExperienceRoutes(deps: LegacyRouteDeps) {
     }
   });
 
+  app.get('/student/courses/:courseId/files/:contentType/:sourceId/chunks', authMiddleware, requirePermission('DOCUMENT_READ'), async (req: AuthRequest, res: Response) => {
+    if (!ensureStudent(req, res)) return;
+    const courseId = Number(req.params.courseId);
+    const sourceId = Number(req.params.sourceId);
+    const contentType = String(req.params.contentType || '').toUpperCase();
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit ?? 30) || 30));
+    if (!Number.isFinite(courseId) || courseId <= 0 || !Number.isFinite(sourceId) || sourceId <= 0) {
+      return res.status(400).json({ error: 'Invalid course or source id' });
+    }
+    if (!['DOCUMENT', 'VIDEO'].includes(contentType)) {
+      return res.status(400).json({ error: 'contentType must be DOCUMENT or VIDEO' });
+    }
+    try {
+      if (!(await ensureEnrolledCourse(req, res, courseId))) return;
+      const sourceQuery = contentType === 'DOCUMENT'
+        ? await pool.query('SELECT id, filename AS name FROM documents WHERE id = $1 AND course_id = $2', [sourceId, courseId])
+        : await pool.query("SELECT id, COALESCE(title, youtube_url, 'Video') AS name FROM videos WHERE id = $1 AND course_id = $2", [sourceId, courseId]);
+      if (!sourceQuery.rows.length) return res.status(404).json({ error: 'Source not found in this course' });
+      const tenantId = req.tenantId!;
+      const chunks = contentType === 'DOCUMENT'
+        ? await pool.query(
+            `SELECT chunk_index, content, metadata
+             FROM chunks
+             WHERE tenant_id = $1 AND document_id = $2
+             ORDER BY chunk_index ASC
+             LIMIT $3`,
+            [tenantId, sourceId, limit],
+          )
+        : await pool.query(
+            `SELECT chunk_index, content, metadata
+             FROM chunks
+             WHERE tenant_id = $1 AND video_id = $2
+             ORDER BY chunk_index ASC
+             LIMIT $3`,
+            [tenantId, sourceId, limit],
+          );
+      return res.json({
+        source: {
+          id: sourceId,
+          type: contentType,
+          name: sourceQuery.rows[0].name,
+          course_id: courseId,
+        },
+        chunk_count: chunks.rows.length,
+        chunks: chunks.rows.map((row) => {
+          const content = String(row.content ?? '');
+          return {
+            chunk_index: Number(row.chunk_index ?? 0),
+            preview: content.slice(0, 600),
+            size_chars: content.length,
+            size_words: content.trim() ? content.trim().split(/\s+/).length : 0,
+            metadata: typeof row.metadata === 'object' && row.metadata !== null ? row.metadata : {},
+          };
+        }),
+      });
+    } catch {
+      return res.status(500).json({ error: 'Failed to load chunks' });
+    }
+  });
+
   app.get('/student/courses/:courseId/assignments', authMiddleware, requirePermission('ASSESSMENT_READ'), async (req: AuthRequest, res: Response) => {
     if (!ensureStudent(req, res)) return;
     const courseId = Number(req.params.courseId);

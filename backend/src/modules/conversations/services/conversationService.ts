@@ -164,6 +164,7 @@ export function createConversationService(deps: LegacyRouteDeps) {
         }
         let aiResponse: any;
         try {
+          const requestedTopK = Number.isFinite(Number(top_k)) ? Number(top_k) : 10;
           aiResponse = await axios.post(
             `${AI_SERVICE_URL}/api/chat`,
             {
@@ -171,6 +172,7 @@ export function createConversationService(deps: LegacyRouteDeps) {
               conversation_id: convId,
               tenant_id: tenantId,
               course_id: Number.isFinite(parsedCourseId) ? parsedCourseId : null,
+              top_k: Math.max(10, Math.min(25, requestedTopK)),
             },
             { timeout: 60000, headers: aiHeaders },
           );
@@ -265,6 +267,7 @@ export function createConversationService(deps: LegacyRouteDeps) {
           if (!assigned.rows.length) return res.status(403).json({ error: 'Faculty is not assigned to this course' });
         }
         try {
+          const requestedTopK = Number.isFinite(Number(top_k)) ? Number(top_k) : 10;
           const aiResponse = await axios.post(
             `${AI_SERVICE_URL}/api/chat`,
             {
@@ -272,6 +275,7 @@ export function createConversationService(deps: LegacyRouteDeps) {
               conversation_id: null,
               tenant_id: tenantId,
               course_id: Number.isFinite(parsedCourseId) ? parsedCourseId : null,
+              top_k: Math.max(10, Math.min(25, requestedTopK)),
             },
             { timeout: 60000, headers: aiHeaders },
           );

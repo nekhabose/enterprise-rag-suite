@@ -98,6 +98,7 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[int] = None
     tenant_id: int
     course_id: Optional[int] = None
+    top_k: Optional[int] = Field(default=10, ge=1, le=25)
 
 class IngestRequest(BaseModel):
     tenant_id: int
@@ -165,6 +166,21 @@ def _normalize_chunking(value: Optional[str]) -> str:
         "sentence": "sentence",
     }
     return mapping.get(raw, "semantic")
+
+
+def _chunking_profile(strategy: str) -> dict:
+    normalized = _normalize_chunking(strategy)
+    profiles = {
+        "fixed_size": {"unit": "words", "chunk_size": 500, "overlap": 50},
+        "overlap": {"unit": "words", "chunk_size": 500, "overlap": 50},
+        "semantic": {"unit": "chars", "max_chunk_size": 1000},
+        "paragraph": {"unit": "paragraphs", "max_paragraphs_per_chunk": 5, "min_paragraph_length": 50},
+        "page_based": {"unit": "pages", "mode": "preserve_page_boundaries"},
+        "parent_child": {"unit": "words", "parent_size": 1200, "child_size": 300, "overlap": 50},
+        "sentence": {"unit": "sentences", "sentences_per_chunk": 5, "overlap_sentences": 1},
+        "recursive": {"unit": "chars", "chunk_size": 1000},
+    }
+    return {"strategy": normalized, "parameters": profiles.get(normalized, {})}
 
 
 def _resolve_embedding_provider_model(cfg: dict, override_model: Optional[str] = None):
@@ -336,6 +352,7 @@ def _chunk_embed_store(
         return {"chunks_created": 0, "warnings": ["No extractable content found"], "chunking_strategy": None, "vector_store": cfg.get("vector_store")}
 
     chunking_strategy = _normalize_chunking(override_chunking or cfg.get("chunking_strategy"))
+    chunk_profile = _chunking_profile(chunking_strategy)
     chunker = FactoryChunker(chunking_strategy)
     chunks = [c.strip() for c in chunker.chunk(content) if c and str(c).strip()]
     if not chunks:
@@ -372,7 +389,28 @@ def _chunk_embed_store(
                     """
                     for idx, (chunk, vec) in enumerate(zip(chunks, vectors)):
                         vec1536 = _coerce_pgvector_dim([float(x) for x in vec], dim=1536)
-                        cur.execute(insert_sql, [source_id, tenant_id, chunk, vec1536, idx, json.dumps({"source": source_label, "vector_store": vector_store})])
+                        cur.execute(
+                            insert_sql,
+                            [
+                                source_id,
+                                tenant_id,
+                                chunk,
+                                vec1536,
+                                idx,
+                                json.dumps(
+                                    {
+                                        "source": source_label,
+                                        "vector_store": vector_store,
+                                        "chunking_strategy": chunking_strategy,
+                                        "chunk_size_chars": len(chunk),
+                                        "chunk_size_words": len(chunk.split()),
+                                        "chunking_profile": chunk_profile.get("parameters", {}),
+                                        "embedding_provider": provider,
+                                        "embedding_model": model,
+                                    }
+                                ),
+                            ],
+                        )
                 else:
                     cur.execute("DELETE FROM chunks WHERE video_id = %s", [source_id])
                     insert_sql = """
@@ -381,7 +419,28 @@ def _chunk_embed_store(
                     """
                     for idx, (chunk, vec) in enumerate(zip(chunks, vectors)):
                         vec1536 = _coerce_pgvector_dim([float(x) for x in vec], dim=1536)
-                        cur.execute(insert_sql, [source_id, tenant_id, chunk, vec1536, idx, json.dumps({"source": source_label, "vector_store": vector_store})])
+                        cur.execute(
+                            insert_sql,
+                            [
+                                source_id,
+                                tenant_id,
+                                chunk,
+                                vec1536,
+                                idx,
+                                json.dumps(
+                                    {
+                                        "source": source_label,
+                                        "vector_store": vector_store,
+                                        "chunking_strategy": chunking_strategy,
+                                        "chunk_size_chars": len(chunk),
+                                        "chunk_size_words": len(chunk.split()),
+                                        "chunking_profile": chunk_profile.get("parameters", {}),
+                                        "embedding_provider": provider,
+                                        "embedding_model": model,
+                                    }
+                                ),
+                            ],
+                        )
                 conn.commit()
     except psycopg2.errors.ForeignKeyViolation:
         return {
@@ -401,6 +460,9 @@ def _chunk_embed_store(
     return {
         "chunks_created": len(chunks),
         "chunking_strategy": chunking_strategy,
+        "chunking_profile": chunk_profile,
+        "chunk_size_avg_chars": int(sum(len(c) for c in chunks) / len(chunks)) if chunks else 0,
+        "chunk_size_avg_words": int(sum(len(c.split()) for c in chunks) / len(chunks)) if chunks else 0,
         "embedding_provider": provider,
         "embedding_model": model,
         "vector_store": vector_store,
@@ -441,7 +503,12 @@ async def chat(
         course_id=body.course_id,
     )
 
-    rag_result = rag_engine.answer(body.tenant_id, body.message, body.course_id)
+    rag_result = rag_engine.answer(
+        body.tenant_id,
+        body.message,
+        body.course_id,
+        top_k=body.top_k or 10,
+    )
 
     return {
         "response": rag_result["response"],
@@ -453,7 +520,105 @@ async def chat(
         "retrieval_strategy_used": rag_result.get("retrieval_strategy_used"),
         "vector_store_used": rag_result.get("vector_store_used"),
         "chunking_strategy_used": rag_result.get("chunking_strategy_used"),
+        "top_k_used": rag_result.get("top_k_used"),
         "tokens_used": len(body.message.split()),
+    }
+
+
+@app.get("/ai/chunking-profile")
+async def chunking_profile(
+    strategy: Optional[str] = None,
+    tenant_id: Optional[int] = None,
+    user: AuthenticatedUser = Depends(require_permission("DOCUMENT_READ")),
+):
+    effective = strategy
+    if not effective and tenant_id is not None:
+        if not tenant_scoped(user, tenant_id):
+            raise HTTPException(status_code=403, detail="Tenant access denied")
+        cfg = rag_engine._get_tenant_ai_settings(tenant_id)
+        effective = str(_first_scalar(cfg.get("chunking_strategy")) or "semantic")
+    return _chunking_profile(effective or "semantic")
+
+
+@app.get("/ai/chunks")
+@limiter.limit("30/minute")
+async def list_chunks(
+    request: Request,
+    tenant_id: int,
+    source_kind: str,
+    source_id: int,
+    course_id: Optional[int] = None,
+    limit: int = 20,
+    user: AuthenticatedUser = Depends(require_permission("DOCUMENT_READ")),
+):
+    if source_kind not in ("document", "video"):
+        raise HTTPException(status_code=422, detail="source_kind must be document or video")
+    if not tenant_scoped(user, tenant_id):
+        raise HTTPException(status_code=403, detail="Tenant access denied")
+    safe_limit = max(1, min(100, int(limit)))
+    with _get_db_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if source_kind == "document":
+                cur.execute(
+                    "SELECT id, course_id, filename AS source_name FROM documents WHERE id = %s AND tenant_id = %s",
+                    [source_id, tenant_id],
+                )
+            else:
+                cur.execute(
+                    "SELECT id, course_id, COALESCE(title, youtube_url, 'Video') AS source_name FROM videos WHERE id = %s AND tenant_id = %s",
+                    [source_id, tenant_id],
+                )
+            source_row = cur.fetchone()
+            if not source_row:
+                raise HTTPException(status_code=404, detail=f"{source_kind.title()} not found")
+            if course_id is not None and int(source_row.get("course_id") or 0) != int(course_id):
+                raise HTTPException(status_code=403, detail="Source does not belong to requested course")
+            if source_kind == "document":
+                cur.execute(
+                    """
+                    SELECT chunk_index, content, metadata
+                    FROM chunks
+                    WHERE tenant_id = %s AND document_id = %s
+                    ORDER BY chunk_index ASC
+                    LIMIT %s
+                    """,
+                    [tenant_id, source_id, safe_limit],
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT chunk_index, content, metadata
+                    FROM chunks
+                    WHERE tenant_id = %s AND video_id = %s
+                    ORDER BY chunk_index ASC
+                    LIMIT %s
+                    """,
+                    [tenant_id, source_id, safe_limit],
+                )
+            rows = list(cur.fetchall())
+
+    chunks = []
+    for row in rows:
+        content = str(row.get("content") or "")
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        chunks.append(
+            {
+                "chunk_index": int(row.get("chunk_index") or 0),
+                "preview": content[:500],
+                "size_chars": len(content),
+                "size_words": len(content.split()),
+                "metadata": metadata,
+            }
+        )
+
+    return {
+        "source_kind": source_kind,
+        "source_id": source_id,
+        "source_name": source_row.get("source_name"),
+        "tenant_id": tenant_id,
+        "course_id": source_row.get("course_id"),
+        "chunk_count_returned": len(chunks),
+        "chunks": chunks,
     }
 
 
@@ -604,6 +769,9 @@ async def index_document(
                 "chunks_created": ingest["chunks_created"],
                 "vector_store": ingest["vector_store"],
                 "chunking_strategy": ingest["chunking_strategy"],
+                "chunking_profile": ingest.get("chunking_profile"),
+                "chunk_size_avg_chars": ingest.get("chunk_size_avg_chars"),
+                "chunk_size_avg_words": ingest.get("chunk_size_avg_words"),
                 "warnings": ingest.get("warnings", []),
             }
 
@@ -647,6 +815,10 @@ async def ingest_youtube_legacy(
         "status": "indexed",
         "video_id": body.video_id,
         "chunks_created": ingest["chunks_created"],
+        "chunking_strategy": ingest.get("chunking_strategy"),
+        "chunking_profile": ingest.get("chunking_profile"),
+        "chunk_size_avg_chars": ingest.get("chunk_size_avg_chars"),
+        "chunk_size_avg_words": ingest.get("chunk_size_avg_words"),
         "warnings": ingest.get("warnings", []),
     }
 
@@ -694,6 +866,10 @@ async def index_video_upload(
                 "status": "indexed",
                 "video_id": body.video_id,
                 "chunks_created": ingest["chunks_created"],
+                "chunking_strategy": ingest.get("chunking_strategy"),
+                "chunking_profile": ingest.get("chunking_profile"),
+                "chunk_size_avg_chars": ingest.get("chunk_size_avg_chars"),
+                "chunk_size_avg_words": ingest.get("chunk_size_avg_words"),
                 "warnings": ingest.get("warnings", []),
             }
 
@@ -736,6 +912,10 @@ async def ingest_web(
         "status": "indexed",
         "url": body.url,
         "chunks_created": ingest["chunks_created"],
+        "chunking_strategy": ingest.get("chunking_strategy"),
+        "chunking_profile": ingest.get("chunking_profile"),
+        "chunk_size_avg_chars": ingest.get("chunk_size_avg_chars"),
+        "chunk_size_avg_words": ingest.get("chunk_size_avg_words"),
         "warnings": ingest.get("warnings", []),
     }
 

@@ -57,7 +57,7 @@ class RAGEngine:
             )
         return ingestion.ingest_text(tenant_id, source, text)
 
-    def answer(self, tenant_id: int, question: str, course_id: Optional[int] = None) -> Dict:
+    def answer(self, tenant_id: int, question: str, course_id: Optional[int] = None, top_k: int = 10) -> Dict:
         cfg = self._get_tenant_ai_settings(tenant_id)
         retrieval_strategy = str(cfg.get("retrieval_strategy") or settings.retrieval_strategy)
         vector_store = str(cfg.get("vector_store") or settings.vector_store)
@@ -83,11 +83,13 @@ class RAGEngine:
         if cached is not None:
             return cached
 
+        requested_top_k = max(10, min(25, int(top_k or 10)))
+
         try:
             docs = self.retriever.retrieve(
                 tenant_id,
                 question,
-                top_k=5,
+                top_k=requested_top_k,
                 course_id=course_id,
                 retrieval_strategy=retrieval_strategy,
                 vector_store=vector_store,
@@ -107,10 +109,12 @@ class RAGEngine:
                 "retrieval_strategy_used": retrieval_strategy,
                 "vector_store_used": vector_store,
                 "chunking_strategy_used": chunking_strategy,
+                "top_k_used": requested_top_k,
                 "sources": [],
             }
         ranked = self.reranker.rerank(docs)
-        grounded = [d for d in ranked if float(d.get("score", 0) or 0) >= 0.34 and d.get("snippet")]
+        min_ground_score = float(os.getenv("RAG_MIN_GROUND_SCORE", "0.18"))
+        grounded = [d for d in ranked if float(d.get("score", 0) or 0) >= min_ground_score and d.get("snippet")]
 
         if not grounded:
             scope = "this course" if course_id is not None else "your available learning materials"
@@ -124,7 +128,7 @@ class RAGEngine:
             }
 
         ranked = grounded
-        context = "\n".join([d.get("snippet", "") for d in ranked])
+        context = "\n".join([d.get("snippet", "") for d in ranked[:requested_top_k]])
         provider = str(cfg.get("llm_provider") or settings.llm_provider)
         model = cfg.get("llm_model")
         temperature = float(cfg.get("temperature") if cfg.get("temperature") is not None else 0.2)
@@ -169,7 +173,7 @@ class RAGEngine:
                         "snippet": d.get("snippet", ""),
                         "score": d.get("score", 0),
                     }
-                    for d in ranked
+                    for d in ranked[:requested_top_k]
                 ],
             }
 
@@ -178,16 +182,17 @@ class RAGEngine:
             "grounded": True,
             "provider_used": provider,
             "model_used": model,
-            "retrieval_strategy_used": retrieval_strategy,
-            "vector_store_used": vector_store,
-            "chunking_strategy_used": chunking_strategy,
+                "retrieval_strategy_used": retrieval_strategy,
+                "vector_store_used": vector_store,
+                "chunking_strategy_used": chunking_strategy,
+                "top_k_used": requested_top_k,
             "sources": [
                 {
                     "source": d.get("source", "unknown"),
                     "snippet": d.get("snippet", ""),
                     "score": d.get("score", 0),
                 }
-                for d in ranked
+                for d in ranked[:requested_top_k]
             ],
         }
         self._set_cached_answer(cache_key, result)

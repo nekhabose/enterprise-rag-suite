@@ -474,6 +474,9 @@ function FacultyFiles() {
   const [videoTitle, setVideoTitle] = useState('');
   const [recordingTitle, setRecordingTitle] = useState('');
   const [previewItem, setPreviewItem] = useState<Record<string, unknown> | null>(null);
+  const [chunkSource, setChunkSource] = useState<Record<string, unknown> | null>(null);
+  const [chunks, setChunks] = useState<Record<string, unknown>[]>([]);
+  const [chunksLoading, setChunksLoading] = useState(false);
 
   const load = () => {
     if (!courseId) return;
@@ -490,6 +493,29 @@ function FacultyFiles() {
   };
 
   useEffect(() => { load(); }, [courseId]);
+
+  const openChunks = async (item: Record<string, unknown>) => {
+    if (!courseId) return;
+    const contentType = String(item.content_type ?? 'DOCUMENT').toUpperCase();
+    if (!['DOCUMENT', 'VIDEO'].includes(contentType)) return;
+    setChunkSource(item);
+    setChunks([]);
+    setChunksLoading(true);
+    try {
+      const response = await facultyApi.getCourseFileChunks(
+        Number(courseId),
+        contentType as 'DOCUMENT' | 'VIDEO',
+        Number(item.id),
+        { limit: 40 },
+      );
+      setChunks(Array.isArray(response.data?.chunks) ? response.data.chunks : []);
+    } catch {
+      setChunks([]);
+      toast.error('Failed to load chunks');
+    } finally {
+      setChunksLoading(false);
+    }
+  };
 
   const onUploadFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -700,6 +726,12 @@ function FacultyFiles() {
                         <a href={`/api/videos/${it.id}/download`} style={{ color: 'var(--brand-700)' }}>Download Recording</a>
                       </>
                     )}
+                    <button
+                      onClick={() => void openChunks(it)}
+                      style={{ border: 'none', background: 'transparent', color: 'var(--brand-700)', cursor: 'pointer', padding: 0 }}
+                    >
+                      Chunks
+                    </button>
                     <Button size="sm" variant="secondary" onClick={() => setSelectedAttach({ id: Number(it.id), type: String(it.content_type) })}>Attach</Button>
                   </td>
                 </tr>
@@ -781,6 +813,47 @@ function FacultyFiles() {
               )}
             </div>
           </Card>
+          </div>
+        </div>
+      )}
+      {chunkSource && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.45)',
+            display: 'grid',
+            placeItems: 'center',
+            zIndex: 70,
+            padding: 16,
+          }}
+          onClick={() => setChunkSource(null)}
+        >
+          <div onClick={(e) => e.stopPropagation()}>
+            <Card style={{ width: 'min(960px, 95vw)', maxHeight: '85vh', overflow: 'auto' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <h4 style={{ margin: 0, color: 'var(--text-primary)' }}>
+                  Chunks: {String(chunkSource.name ?? 'Source')}
+                </h4>
+                <Button size="sm" variant="secondary" onClick={() => setChunkSource(null)}>Close</Button>
+              </div>
+              {chunksLoading ? (
+                <div style={uiStyles.loadingCenter}><Spinner /></div>
+              ) : chunks.length === 0 ? (
+                <p style={{ margin: 0, color: 'var(--text-muted)' }}>No chunks indexed for this item yet.</p>
+              ) : (
+                <div style={{ display: 'grid', gap: 10 }}>
+                  {chunks.map((c, idx) => (
+                    <div key={`chunk-${idx}`} style={{ border: '1px solid var(--border-subtle)', borderRadius: 10, padding: 10, background: 'var(--surface-subtle)' }}>
+                      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>
+                        Chunk #{Number(c.chunk_index ?? idx)} • {Number(c.size_words ?? 0)} words • {Number(c.size_chars ?? 0)} chars
+                      </div>
+                      <div style={{ color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>{String(c.preview ?? '')}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
           </div>
         </div>
       )}

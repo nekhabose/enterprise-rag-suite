@@ -52,7 +52,7 @@ class PostgresKeywordRetriever:
         tokens = [t for t in re.findall(r"[a-zA-Z0-9_]+", query.lower()) if len(t) >= 3][:8]
         if not tokens:
             tokens = [query.lower()[:64]]
-        top_k = max(1, min(12, int(top_k)))
+        top_k = max(1, min(25, int(top_k)))
 
         embedding_provider, embedding_model = self._resolve_embedding_choice(
             embedding_provider_raw=embedding_provider_raw,

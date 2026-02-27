@@ -158,7 +158,7 @@ export const userApi = {
       model: data.model ?? null,
       retrieval_strategy: data.retrieval_strategy ?? null,
       enable_reranking: data.enable_reranking ?? false,
-      top_k: data.top_k ?? 5,
+      top_k: data.top_k ?? 10,
     }),
   getConversations: () => api.get('/conversations'),
   createConversation: (data?: Record<string, unknown>) => api.post('/conversations', data ?? {}),
@@ -189,6 +189,8 @@ export const studentApi = {
     api.get(`/student/courses/${courseId}/quizzes`, { params }),
   getCourseFiles: (courseId: number, params?: Record<string, unknown>) =>
     api.get(`/student/courses/${courseId}/files`, { params }),
+  getCourseFileChunks: (courseId: number, contentType: 'DOCUMENT' | 'VIDEO', sourceId: number, params?: Record<string, unknown>) =>
+    api.get(`/student/courses/${courseId}/files/${contentType}/${sourceId}/chunks`, { params }),
   getCourseAssignments: (courseId: number) => api.get(`/student/courses/${courseId}/assignments`),
   submitCourseAssignment: (courseId: number, assignmentId: number, data: Record<string, unknown>) =>
     api.post(`/student/courses/${courseId}/assignments/${assignmentId}/submit`, data),
@@ -220,6 +222,8 @@ export const facultyApi = {
   moveModuleItem: (courseId: number, itemId: number, target_module_id: number) =>
     api.put(`/faculty/courses/${courseId}/modules/items/${itemId}/move`, { target_module_id }),
   getCourseFiles: (courseId: number) => api.get(`/faculty/courses/${courseId}/files`),
+  getCourseFileChunks: (courseId: number, contentType: 'DOCUMENT' | 'VIDEO', sourceId: number, params?: Record<string, unknown>) =>
+    api.get(`/faculty/courses/${courseId}/files/${contentType}/${sourceId}/chunks`, { params }),
   attachFileToModule: (courseId: number, data: Record<string, unknown>) => api.post(`/faculty/courses/${courseId}/files/attach`, data),
   getCourseQuizzes: (courseId: number, params?: Record<string, unknown>) => api.get(`/faculty/courses/${courseId}/quizzes`, { params }),
   createManualQuiz: (courseId: number, data: Record<string, unknown>) => api.post(`/faculty/courses/${courseId}/quizzes/manual`, data),
