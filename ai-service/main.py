@@ -310,12 +310,24 @@ def _index_into_selected_store(
         from vector_stores.vector_store_factory import VectorStoreFactory
         dimension = len(vectors[0]) if vectors else 384
         kwargs = {}
+        namespace_suffix = f"tenant_{tenant_id}_course_{course_id or 0}"
         if store_name in ("chroma", "chromadb"):
-            kwargs["collection_name"] = f"tenant_{tenant_id}_course_{course_id or 0}"
+            kwargs["collection_name"] = namespace_suffix
             kwargs["persist_directory"] = os.path.join("data", "chroma")
         elif store_name.startswith("faiss"):
             os.makedirs(os.path.join("data", "faiss"), exist_ok=True)
-            kwargs["storage_path"] = os.path.join("data", "faiss", f"tenant_{tenant_id}_course_{course_id or 0}")
+            kwargs["storage_path"] = os.path.join("data", "faiss", namespace_suffix)
+        elif store_name.startswith("qdrant"):
+            kwargs["collection_name"] = namespace_suffix
+            kwargs["use_memory"] = str(os.getenv("QDRANT_USE_MEMORY", "true")).strip().lower() in ("1", "true", "yes")
+            kwargs["host"] = os.getenv("QDRANT_HOST", "localhost")
+            kwargs["port"] = int(os.getenv("QDRANT_PORT", "6333"))
+        elif store_name == "pinecone":
+            kwargs["namespace"] = namespace_suffix
+            kwargs["api_key"] = os.getenv("PINECONE_API_KEY")
+            kwargs["index_name"] = os.getenv("PINECONE_INDEX", "enterprise-rag")
+            kwargs["cloud"] = os.getenv("PINECONE_CLOUD", "aws")
+            kwargs["region"] = os.getenv("PINECONE_REGION", "us-east-1")
         store = VectorStoreFactory.create(
             strategy=store_name,
             dimension=dimension,

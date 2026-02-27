@@ -87,27 +87,18 @@ class PostgresKeywordRetriever:
                         embedding_provider=embedding_provider,
                         embedding_model=embedding_model,
                     )
-            elif vector_store in ("chroma", "chromadb"):
-                semantic_scores = self._semantic_scores_chroma(
+            else:
+                semantic_scores = self._semantic_scores_external_store(
+                    tenant_id=tenant_id,
+                    course_id=course_id,
                     query=query,
-                    chunks=chunks,
+                    top_k=max(top_k * 2, 12),
+                    vector_store=vector_store,
                     embedding_provider=embedding_provider,
                     embedding_model=embedding_model,
                 )
                 if not semantic_scores:
-                    semantic_scores = self._semantic_scores_in_memory(
-                        query=query,
-                        chunks=chunks,
-                        embedding_provider=embedding_provider,
-                        embedding_model=embedding_model,
-                    )
-            else:
-                semantic_scores = self._semantic_scores_in_memory(
-                    query=query,
-                    chunks=chunks,
-                    embedding_provider=embedding_provider,
-                    embedding_model=embedding_model,
-                )
+                    raise RuntimeError(f"Vector store '{vector_store}' retrieval failed at runtime")
 
         rows = self._rank_chunks(
             chunks=chunks,
@@ -333,6 +324,74 @@ class PostgresKeywordRetriever:
             from chromadb.config import Settings as ChromaSettings
         except Exception:
             return {}
+
+    def _semantic_scores_external_store(
+        self,
+        tenant_id: int,
+        course_id: Optional[int],
+        query: str,
+        top_k: int,
+        vector_store: str,
+        embedding_provider: str,
+        embedding_model: Optional[str],
+    ) -> Dict[str, float]:
+        query_vecs = self._embed_texts([query], provider=embedding_provider, model=embedding_model)
+        if not query_vecs:
+            return {}
+        query_vector = query_vecs[0]
+        try:
+            from vector_stores.vector_store_factory import VectorStoreFactory
+        except Exception as exc:
+            raise RuntimeError(f"Vector store adapters unavailable: {exc}")
+
+        kwargs: Dict[str, Any] = {}
+        namespace_suffix = f"tenant_{tenant_id}_course_{course_id or 0}"
+        if vector_store in ("chroma", "chromadb"):
+            kwargs["collection_name"] = namespace_suffix
+            kwargs["persist_directory"] = os.path.join("data", "chroma")
+        elif vector_store.startswith("faiss"):
+            kwargs["storage_path"] = os.path.join("data", "faiss", namespace_suffix)
+        elif vector_store.startswith("qdrant"):
+            kwargs["collection_name"] = namespace_suffix
+            kwargs["use_memory"] = str(os.getenv("QDRANT_USE_MEMORY", "true")).strip().lower() in ("1", "true", "yes")
+            kwargs["host"] = os.getenv("QDRANT_HOST", "localhost")
+            kwargs["port"] = int(os.getenv("QDRANT_PORT", "6333"))
+        elif vector_store == "pinecone":
+            kwargs["namespace"] = namespace_suffix
+            kwargs["api_key"] = os.getenv("PINECONE_API_KEY")
+            kwargs["index_name"] = os.getenv("PINECONE_INDEX", "enterprise-rag")
+            kwargs["cloud"] = os.getenv("PINECONE_CLOUD", "aws")
+            kwargs["region"] = os.getenv("PINECONE_REGION", "us-east-1")
+
+        store = VectorStoreFactory.create(
+            strategy=vector_store,
+            dimension=len(query_vector),
+            db_connection_string=self.db_url,
+            **kwargs,
+        )
+
+        filter_payload: Dict[str, Any] = {"tenant_id": tenant_id}
+        if course_id is not None:
+            filter_payload["course_id"] = course_id
+        results = store.search(
+            query_vector=query_vector,
+            top_k=top_k,
+            filter=filter_payload,
+        )
+        scores: Dict[str, float] = {}
+        for result in results or []:
+            rid = str(getattr(result, "id", "") or "")
+            raw_score = float(getattr(result, "score", 0.0) or 0.0)
+            # Different stores expose either similarity (higher better) or distance (lower better).
+            # Normalize into similarity-like scale.
+            if raw_score > 1.0:
+                sim = 1.0 / (1.0 + raw_score)
+            elif raw_score < 0:
+                sim = 0.0
+            else:
+                sim = raw_score
+            scores[rid] = max(0.0, min(1.0, sim))
+        return scores
 
         os.environ.setdefault("ANONYMIZED_TELEMETRY", "FALSE")
         os.environ.setdefault("CHROMA_TELEMETRY_IMPL", "none")
