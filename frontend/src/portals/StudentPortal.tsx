@@ -277,14 +277,31 @@ function CourseHomeSection() {
     studentApi.getCourseHome(Number(courseId)).then((r) => setData(r.data)).catch(() => setData({}));
   }, [courseId]);
   const summary = (data?.summary ?? {}) as Record<string, number>;
+  const statTiles = [
+    { key: 'documents', label: 'Documents', value: Number(summary.documents ?? 0), icon: '📄' },
+    { key: 'videos', label: 'Videos', value: Number(summary.videos ?? 0), icon: '🎬' },
+    { key: 'quizzes', label: 'Quizzes', value: Number(summary.quizzes ?? 0), icon: '📝' },
+  ];
   return (
     <CourseFrame section="Home">
       <Card>
         <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>Course Overview</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(120px, 1fr))', gap: '10px' }}>
-          <Card><strong>{summary.documents ?? 0}</strong><div style={{ color: 'var(--text-muted)' }}>Documents</div></Card>
-          <Card><strong>{summary.videos ?? 0}</strong><div style={{ color: 'var(--text-muted)' }}>Videos</div></Card>
-          <Card><strong>{summary.quizzes ?? 0}</strong><div style={{ color: 'var(--text-muted)' }}>Quizzes</div></Card>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(160px, 1fr))', gap: '12px' }}>
+          {statTiles.map((tile) => (
+            <div
+              key={tile.key}
+              style={{
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 12,
+                background: 'linear-gradient(180deg, color-mix(in srgb, var(--brand-500) 10%, var(--bg-surface)), var(--bg-surface))',
+                padding: '14px 14px 12px',
+              }}
+            >
+              <div style={{ fontSize: 18, marginBottom: 6 }}>{tile.icon}</div>
+              <div style={{ fontSize: 34, lineHeight: 1, fontWeight: 800, color: 'var(--text-primary)' }}>{tile.value}</div>
+              <div style={{ marginTop: 6, color: 'var(--text-secondary)', fontSize: 13, fontWeight: 600 }}>{tile.label}</div>
+            </div>
+          ))}
         </div>
       </Card>
     </CourseFrame>

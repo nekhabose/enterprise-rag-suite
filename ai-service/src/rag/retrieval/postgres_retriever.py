@@ -272,6 +272,10 @@ class PostgresKeywordRetriever:
         except Exception:
             return {}
 
+        os.environ.setdefault("ANONYMIZED_TELEMETRY", "FALSE")
+        os.environ.setdefault("CHROMA_TELEMETRY_IMPL", "none")
+        os.environ.setdefault("CHROMA_PRODUCT_TELEMETRY_IMPL", "none")
+
         texts = [str(c.get("text") or c.get("snippet") or "") for c in chunks]
         vectors = self._embed_texts([query, *texts], provider=embedding_provider, model=embedding_model)
         if len(vectors) < 2:
@@ -281,7 +285,14 @@ class PostgresKeywordRetriever:
         chunk_ids = [str(c["chunk_id"]) for c in chunks]
 
         try:
-            client = chromadb.Client(settings=ChromaSettings(anonymized_telemetry=False))
+            try:
+                chroma_settings = ChromaSettings(
+                    anonymized_telemetry=False,
+                    chroma_product_telemetry_impl="none",
+                )
+            except TypeError:
+                chroma_settings = ChromaSettings(anonymized_telemetry=False)
+            client = chromadb.Client(settings=chroma_settings)
             collection_name = f"tenant_runtime_retrieval_{uuid.uuid4().hex}"
             collection = client.create_collection(name=collection_name, metadata={"hnsw:space": "cosine"})
             collection.add(

@@ -4,6 +4,13 @@ Open-source embedding database
 """
 from .base_store import BaseVectorStore, SearchResult
 from typing import List, Dict, Any, Optional
+import os
+
+# Disable telemetry noise/errors from chroma in local/dev environments.
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "FALSE")
+os.environ.setdefault("CHROMA_TELEMETRY_IMPL", "none")
+os.environ.setdefault("CHROMA_PRODUCT_TELEMETRY_IMPL", "none")
+
 import chromadb
 from chromadb.config import Settings
 
@@ -38,14 +45,22 @@ class ChromaDBVectorStore(BaseVectorStore):
         self.persist_directory = persist_directory or "./chroma_db"
         
         # Initialize client
+        try:
+            chroma_settings = Settings(
+                anonymized_telemetry=False,
+                chroma_product_telemetry_impl="none",
+            )
+        except TypeError:
+            chroma_settings = Settings(anonymized_telemetry=False)
+
         if persist_directory:
             self.client = chromadb.PersistentClient(
                 path=persist_directory,
-                settings=Settings(anonymized_telemetry=False)
+                settings=chroma_settings
             )
         else:
             self.client = chromadb.Client(
-                settings=Settings(anonymized_telemetry=False)
+                settings=chroma_settings
             )
         
         # Get or create collection

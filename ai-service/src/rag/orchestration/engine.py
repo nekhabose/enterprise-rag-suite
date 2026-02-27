@@ -117,14 +117,25 @@ class RAGEngine:
                 max_tokens=max_tokens,
             )
         except Exception as exc:
+            # Do not fail chat when tenant-selected provider is misconfigured.
+            # Return a grounded fallback synthesized from retrieved context.
+            fallback = self.llm.answer(
+                prompt,
+                provider="mock",
+                model=None,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
             return {
-                "response": (
-                    f"AI provider '{provider}' is configured but failed to respond. "
-                    f"Check model/API key configuration. Details: {exc}"
-                ),
-                "grounded": False,
+                "response": fallback,
+                "grounded": True,
                 "provider_used": provider,
                 "model_used": model,
+                "llm_fallback": True,
+                "warning": (
+                    f"Provider '{provider}' failed; returned deterministic grounded fallback. "
+                    f"Details: {exc}"
+                ),
                 "sources": [
                     {
                         "source": d.get("source", "unknown"),

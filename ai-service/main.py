@@ -28,6 +28,12 @@ from src.rag.retrieval.postgres_retriever import PostgresKeywordRetriever
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+# Chroma telemetry can throw noisy runtime errors in some env/package combinations.
+# Force-disable before any Chroma client initialization.
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "FALSE")
+os.environ.setdefault("CHROMA_TELEMETRY_IMPL", "none")
+os.environ.setdefault("CHROMA_PRODUCT_TELEMETRY_IMPL", "none")
+
 load_dotenv()
 
 from middleware.auth import (

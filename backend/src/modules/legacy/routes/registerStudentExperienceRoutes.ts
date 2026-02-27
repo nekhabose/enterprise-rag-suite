@@ -121,8 +121,8 @@ export function registerStudentExperienceRoutes(deps: LegacyRouteDeps) {
       if (!(await ensureEnrolledCourse(req, res, courseId))) return;
       const course = (req as AuthRequest & { course?: Record<string, unknown> }).course ?? {};
       const [docs, videos, quizzes] = await Promise.all([
-        pool.query('SELECT COUNT(*)::int AS count FROM course_module_items cmi JOIN course_modules cm ON cm.id = cmi.module_id WHERE cm.course_id = $1 AND cmi.item_type = \'DOCUMENT\'', [courseId]),
-        pool.query('SELECT COUNT(*)::int AS count FROM course_module_items cmi JOIN course_modules cm ON cm.id = cmi.module_id WHERE cm.course_id = $1 AND cmi.item_type = \'VIDEO\'', [courseId]),
+        pool.query('SELECT COUNT(*)::int AS count FROM documents WHERE course_id = $1', [courseId]),
+        pool.query('SELECT COUNT(*)::int AS count FROM videos WHERE course_id = $1', [courseId]),
         pool.query('SELECT COUNT(*)::int AS count FROM course_module_items cmi JOIN course_modules cm ON cm.id = cmi.module_id WHERE cm.course_id = $1 AND cmi.item_type = \'QUIZ\'', [courseId]),
       ]);
       return res.json({
