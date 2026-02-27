@@ -185,9 +185,20 @@ function ContentModule() {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('course_id', String(selectedCourseId));
-      await userApi.uploadDocument(formData);
+      const res = await userApi.uploadDocument(formData);
+      const createdId = Number(res?.data?.document_id ?? 0);
+      setDocuments((prev) => {
+        const optimistic = {
+          id: createdId > 0 ? createdId : `optimistic-${Date.now()}`,
+          filename: file.name,
+          course_id: selectedCourseId,
+          is_indexed: false,
+        } as Record<string, unknown>;
+        const exists = prev.some((d) => String(d.id) === String(optimistic.id));
+        return exists ? prev : [optimistic, ...prev];
+      });
       toast.success('Document uploaded');
-      await load(selectedCourseId);
+      window.setTimeout(() => { void load(selectedCourseId); }, 700);
     } catch (err: unknown) {
       toast.error((err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Upload failed');
     } finally {
