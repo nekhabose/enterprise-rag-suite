@@ -71,7 +71,21 @@ export function createDocumentService(deps: LegacyRouteDeps) {
             aiResponse = { data: { chunks_created: 0, warning: 'AI indexing endpoint unavailable; stored document only.' } };
           }
 
-          await repo.query('UPDATE documents SET is_indexed = true WHERE id = $1', [documentId]);
+          const chunksCreated = Number(aiResponse.data?.chunks_created ?? 0);
+          const selectedStoreIndexed = aiResponse.data?.selected_store_indexed;
+          const selectedStoreName = aiResponse.data?.vector_store ?? null;
+          const selectedStoreError = aiResponse.data?.selected_store_error ?? null;
+          const isIndexed = chunksCreated > 0;
+
+          await repo.query(
+            `UPDATE documents
+             SET is_indexed = $1,
+                 selected_store_name = COALESCE($2, selected_store_name),
+                 selected_store_indexed = COALESCE($3, selected_store_indexed),
+                 selected_store_error = $4
+             WHERE id = $5`,
+            [isIndexed, selectedStoreName, selectedStoreIndexed ?? null, selectedStoreError, documentId],
+          );
 
           logAudit(userId, tenantId, 'document.upload', 'document', documentId,
             { filename: req.file.originalname, provider, chunks: aiResponse.data?.chunks_created }, 'info', req);
@@ -80,7 +94,9 @@ export function createDocumentService(deps: LegacyRouteDeps) {
             success: true,
             document_id: documentId,
             filename: req.file.originalname,
-            chunks_created: aiResponse.data?.chunks_created ?? 0,
+            chunks_created: chunksCreated,
+            selected_store_indexed: selectedStoreIndexed ?? null,
+            selected_store_error: selectedStoreError,
             warning: aiResponse.data?.warning,
           });
         } catch (aiErr: any) {
@@ -107,7 +123,8 @@ export function createDocumentService(deps: LegacyRouteDeps) {
       try {
         const params: any[] = [tenantId];
         let q = `SELECT d.id, d.filename, d.subject, d.year, d.uploaded_at, d.is_indexed,
-                        d.file_size_bytes, d.course_id, u.email as uploaded_by
+                        d.file_size_bytes, d.course_id, d.selected_store_name, d.selected_store_indexed, d.selected_store_error,
+                        u.email as uploaded_by
                  FROM documents d JOIN users u ON d.user_id = u.id
                  WHERE d.tenant_id = $1`;
 

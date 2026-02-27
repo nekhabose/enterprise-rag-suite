@@ -14,6 +14,7 @@ export function createVideoService(deps: LegacyRouteDeps) {
 
       try {
         let q = `SELECT v.id, v.title, v.youtube_url, v.file_path, v.source_type, v.mime_type, v.file_size_bytes,
+                        v.selected_store_name, v.selected_store_indexed, v.selected_store_error,
                         v.course_id,
                         v.subject, v.year, v.created_at as uploaded_at,
                         u.email as uploaded_by

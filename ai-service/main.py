@@ -461,6 +461,8 @@ def _chunk_embed_store(
             "embedding_provider": provider,
             "embedding_model": model,
             "vector_store": vector_store,
+            "selected_store_indexed": False,
+            "selected_store_error": f"Source {source_kind}:{source_id} no longer exists while indexing",
             "warnings": [f"Source {source_kind}:{source_id} no longer exists while indexing"],
             "failed": True,
         }
@@ -478,6 +480,8 @@ def _chunk_embed_store(
         "embedding_provider": provider,
         "embedding_model": model,
         "vector_store": vector_store,
+        "selected_store_indexed": warn is None,
+        "selected_store_error": warn,
         "warnings": warnings,
     }
 
@@ -725,12 +729,32 @@ async def ingest_youtube(
     if body.video_id:
         with _get_db_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("UPDATE videos SET transcript = %s WHERE id = %s", [transcript, body.video_id])
+                cur.execute(
+                    """
+                    UPDATE videos
+                    SET
+                      transcript = %s,
+                      selected_store_name = %s,
+                      selected_store_indexed = %s,
+                      selected_store_error = %s
+                    WHERE id = %s
+                    """,
+                    [
+                        transcript,
+                        ingest_result.get("vector_store"),
+                        bool(ingest_result.get("selected_store_indexed")),
+                        ingest_result.get("selected_store_error"),
+                        body.video_id,
+                    ],
+                )
                 conn.commit()
     return {
         "status": "indexed",
         "video_id": body.video_id,
         "chunks": ingest_result["chunks_created"],
+        "vector_store": ingest_result.get("vector_store"),
+        "selected_store_indexed": bool(ingest_result.get("selected_store_indexed")),
+        "selected_store_error": ingest_result.get("selected_store_error"),
         "message": "YouTube video transcript indexed",
         "warnings": ingest_result.get("warnings", []),
     }
@@ -773,13 +797,31 @@ async def index_document(
             )
             if ingest.get("failed"):
                 raise HTTPException(status_code=409, detail=ingest.get("warnings", ["Indexing failed"])[0])
-            cur.execute("UPDATE documents SET is_indexed = true WHERE id = %s", [body.document_id])
+            cur.execute(
+                """
+                UPDATE documents
+                SET
+                  is_indexed = true,
+                  selected_store_name = %s,
+                  selected_store_indexed = %s,
+                  selected_store_error = %s
+                WHERE id = %s
+                """,
+                [
+                    ingest.get("vector_store"),
+                    bool(ingest.get("selected_store_indexed")),
+                    ingest.get("selected_store_error"),
+                    body.document_id,
+                ],
+            )
             conn.commit()
             return {
                 "status": "indexed",
                 "document_id": body.document_id,
                 "chunks_created": ingest["chunks_created"],
                 "vector_store": ingest["vector_store"],
+                "selected_store_indexed": bool(ingest.get("selected_store_indexed")),
+                "selected_store_error": ingest.get("selected_store_error"),
                 "chunking_strategy": ingest["chunking_strategy"],
                 "chunking_profile": ingest.get("chunking_profile"),
                 "chunk_size_avg_chars": ingest.get("chunk_size_avg_chars"),
@@ -821,12 +863,32 @@ async def ingest_youtube_legacy(
                 cfg=cfg,
                 override_chunking=body.source_type if body.source_type in ("fixed", "fixed_size", "semantic", "paragraph", "page_based", "overlap", "parent_child", "sentence", "recursive") else None,
             )
-            cur.execute("UPDATE videos SET transcript = %s WHERE id = %s", [transcript, body.video_id])
+            cur.execute(
+                """
+                UPDATE videos
+                SET
+                  transcript = %s,
+                  selected_store_name = %s,
+                  selected_store_indexed = %s,
+                  selected_store_error = %s
+                WHERE id = %s
+                """,
+                [
+                    transcript,
+                    ingest.get("vector_store"),
+                    bool(ingest.get("selected_store_indexed")),
+                    ingest.get("selected_store_error"),
+                    body.video_id,
+                ],
+            )
             conn.commit()
     return {
         "status": "indexed",
         "video_id": body.video_id,
         "chunks_created": ingest["chunks_created"],
+        "vector_store": ingest.get("vector_store"),
+        "selected_store_indexed": bool(ingest.get("selected_store_indexed")),
+        "selected_store_error": ingest.get("selected_store_error"),
         "chunking_strategy": ingest.get("chunking_strategy"),
         "chunking_profile": ingest.get("chunking_profile"),
         "chunk_size_avg_chars": ingest.get("chunk_size_avg_chars"),
@@ -872,12 +934,32 @@ async def index_video_upload(
                 override_chunking=body.chunking_strategy,
                 override_embedding_model=body.embedding_model,
             )
-            cur.execute("UPDATE videos SET transcript = %s WHERE id = %s", [transcript, body.video_id])
+            cur.execute(
+                """
+                UPDATE videos
+                SET
+                  transcript = %s,
+                  selected_store_name = %s,
+                  selected_store_indexed = %s,
+                  selected_store_error = %s
+                WHERE id = %s
+                """,
+                [
+                    transcript,
+                    ingest.get("vector_store"),
+                    bool(ingest.get("selected_store_indexed")),
+                    ingest.get("selected_store_error"),
+                    body.video_id,
+                ],
+            )
             conn.commit()
             return {
                 "status": "indexed",
                 "video_id": body.video_id,
                 "chunks_created": ingest["chunks_created"],
+                "vector_store": ingest.get("vector_store"),
+                "selected_store_indexed": bool(ingest.get("selected_store_indexed")),
+                "selected_store_error": ingest.get("selected_store_error"),
                 "chunking_strategy": ingest.get("chunking_strategy"),
                 "chunking_profile": ingest.get("chunking_profile"),
                 "chunk_size_avg_chars": ingest.get("chunk_size_avg_chars"),
@@ -905,10 +987,6 @@ async def ingest_web(
         raise HTTPException(status_code=422, detail="Could not extract readable text from URL")
     cfg = rag_engine._get_tenant_ai_settings(body.tenant_id)
     source_id = int(body.video_id)
-    with _get_db_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE videos SET transcript = %s WHERE id = %s", [text, body.video_id])
-            conn.commit()
     ingest = _chunk_embed_store(
         tenant_id=body.tenant_id,
         text=text,
@@ -920,10 +998,34 @@ async def ingest_web(
         override_chunking=body.chunking_strategy,
         override_embedding_model=body.embedding_model,
     )
+    with _get_db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE videos
+                SET
+                  transcript = %s,
+                  selected_store_name = %s,
+                  selected_store_indexed = %s,
+                  selected_store_error = %s
+                WHERE id = %s
+                """,
+                [
+                    text,
+                    ingest.get("vector_store"),
+                    bool(ingest.get("selected_store_indexed")),
+                    ingest.get("selected_store_error"),
+                    body.video_id,
+                ],
+            )
+            conn.commit()
     return {
         "status": "indexed",
         "url": body.url,
         "chunks_created": ingest["chunks_created"],
+        "vector_store": ingest.get("vector_store"),
+        "selected_store_indexed": bool(ingest.get("selected_store_indexed")),
+        "selected_store_error": ingest.get("selected_store_error"),
         "chunking_strategy": ingest.get("chunking_strategy"),
         "chunking_profile": ingest.get("chunking_profile"),
         "chunk_size_avg_chars": ingest.get("chunk_size_avg_chars"),

@@ -450,8 +450,11 @@ export function registerFacultyExperienceRoutes(deps: LegacyRouteDeps) {
         pool.query(
           `SELECT d.id, d.filename AS name, d.uploaded_at AS created, d.uploaded_at AS last_modified,
                   u.email AS modified_by, d.file_size_bytes AS size, d.is_indexed AS status,
+                  d.selected_store_name, d.selected_store_indexed, d.selected_store_error,
                   COALESCE(dc.chunk_count, 0)::int AS chunk_count,
                   CASE
+                    WHEN d.selected_store_indexed = true THEN 'Indexed'
+                    WHEN d.selected_store_indexed = false THEN 'Failed'
                     WHEN COALESCE(dc.chunk_count, 0) > 0 THEN 'Indexed'
                     WHEN d.uploaded_at > NOW() - INTERVAL '5 minutes' THEN 'Processing'
                     ELSE 'Failed'
@@ -472,8 +475,11 @@ export function registerFacultyExperienceRoutes(deps: LegacyRouteDeps) {
         pool.query(
           `SELECT v.id, COALESCE(v.title, v.youtube_url, 'Video') AS name, v.created_at AS created, v.created_at AS last_modified,
                   u.email AS modified_by, NULL::bigint AS size, true AS status,
+                  v.selected_store_name, v.selected_store_indexed, v.selected_store_error,
                   COALESCE(vc.chunk_count, 0)::int AS chunk_count,
                   CASE
+                    WHEN v.selected_store_indexed = true THEN 'Indexed'
+                    WHEN v.selected_store_indexed = false THEN 'Failed'
                     WHEN COALESCE(vc.chunk_count, 0) > 0 THEN 'Indexed'
                     WHEN v.created_at > NOW() - INTERVAL '10 minutes' THEN 'Processing'
                     ELSE 'Failed'
@@ -555,6 +561,72 @@ export function registerFacultyExperienceRoutes(deps: LegacyRouteDeps) {
       });
     } catch {
       return res.status(500).json({ error: 'Failed to load chunks' });
+    }
+  });
+
+  app.get('/faculty/courses/:courseId/chunks', authMiddleware, requirePermission('DOCUMENT_READ'), async (req: AuthRequest, res: Response) => {
+    if (!ensureFaculty(req, res)) return;
+    const courseId = Number(req.params.courseId);
+    const tenantId = req.tenantId!;
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit ?? 200) || 200));
+    const search = String(req.query.search ?? '').trim();
+    if (!Number.isFinite(courseId) || courseId <= 0) return res.status(400).json({ error: 'Invalid course ID' });
+    try {
+      if (!(await ensureAssignedCourse(req, res, courseId))) return;
+      const params: unknown[] = [tenantId, courseId, courseId];
+      let searchClause = '';
+      if (search) {
+        params.push(`%${search}%`);
+        searchClause = ` AND c.content ILIKE $${params.length}`;
+      }
+      params.push(limit);
+
+      const result = await pool.query(
+        `SELECT
+            c.id,
+            c.chunk_index,
+            c.content,
+            c.metadata,
+            c.document_id,
+            c.video_id,
+            CASE WHEN c.document_id IS NOT NULL THEN 'DOCUMENT' ELSE 'VIDEO' END AS content_type,
+            COALESCE(d.filename, v.title, v.youtube_url, 'Content') AS source_name,
+            COALESCE(d.course_id, v.course_id) AS course_id
+         FROM chunks c
+         LEFT JOIN documents d ON d.id = c.document_id
+         LEFT JOIN videos v ON v.id = c.video_id
+         WHERE c.tenant_id = $1
+           AND (
+             (c.document_id IS NOT NULL AND d.course_id = $2)
+             OR
+             (c.video_id IS NOT NULL AND v.course_id = $3)
+           )
+           ${searchClause}
+         ORDER BY c.id DESC
+         LIMIT $${params.length}`,
+        params,
+      );
+
+      return res.json({
+        course_id: courseId,
+        total: result.rows.length,
+        chunks: result.rows.map((row) => {
+          const text = String(row.content ?? '');
+          return {
+            id: Number(row.id),
+            chunk_index: Number(row.chunk_index ?? 0),
+            content_type: String(row.content_type),
+            source_id: Number(row.document_id ?? row.video_id ?? 0),
+            source_name: String(row.source_name ?? 'Content'),
+            size_chars: text.length,
+            size_words: text.trim() ? text.trim().split(/\s+/).length : 0,
+            preview: text.slice(0, 1000),
+            metadata: typeof row.metadata === 'object' && row.metadata !== null ? row.metadata : {},
+          };
+        }),
+      });
+    } catch {
+      return res.status(500).json({ error: 'Failed to load course chunks' });
     }
   });
 

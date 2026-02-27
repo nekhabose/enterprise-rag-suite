@@ -23,6 +23,7 @@ const COURSE_NAV = [
   { key: 'quizzes', label: 'Quizzes' },
   { key: 'assignments', label: 'Assignments' },
   { key: 'files', label: 'Files' },
+  { key: 'chunks', label: 'Chunks' },
   { key: 'gradebook', label: 'Gradebook' },
   { key: 'inbox', label: 'Course Inbox' },
   { key: 'settings', label: 'Settings' },
@@ -691,6 +692,16 @@ function FacultyFiles() {
                         {Number(it.chunk_count)} chunks
                       </div>
                     )}
+                    {Boolean(it.selected_store_name) && (
+                      <div style={{ marginTop: 4, fontSize: 11, color: Boolean(it.selected_store_indexed === false) ? 'var(--danger-700)' : 'var(--text-muted)' }}>
+                        Store: {String(it.selected_store_name)} • {it.selected_store_indexed === false ? 'Failed' : it.selected_store_indexed === true ? 'Success' : 'Unknown'}
+                      </div>
+                    )}
+                    {it.selected_store_indexed === false && Boolean(it.selected_store_error) && (
+                      <div style={{ marginTop: 4, fontSize: 11, color: 'var(--danger-700)' }}>
+                        {String(it.selected_store_error)}
+                      </div>
+                    )}
                   </td>
                   <td style={{ padding: '10px 8px', display: 'flex', gap: 6 }}>
                     {String(it.content_type) === 'DOCUMENT' && (
@@ -855,6 +866,83 @@ function FacultyFiles() {
               )}
             </Card>
           </div>
+        </div>
+      )}
+    </CourseFrame>
+  );
+}
+
+function FacultyChunks() {
+  const { courseId } = useParams();
+  const [loading, setLoading] = useState(true);
+  const [chunks, setChunks] = useState<Record<string, unknown>[]>([]);
+  const [search, setSearch] = useState('');
+  const [stats, setStats] = useState({ total: 0, avgWords: 0, avgChars: 0 });
+
+  const load = async (nextSearch?: string) => {
+    if (!courseId) return;
+    setLoading(true);
+    try {
+      const response = await facultyApi.getCourseChunks(Number(courseId), {
+        limit: 300,
+        search: (nextSearch ?? search).trim() || undefined,
+      });
+      const list = Array.isArray(response.data?.chunks) ? response.data.chunks : [];
+      setChunks(list);
+      const total = Number(response.data?.total ?? list.length);
+      const totalWords = list.reduce((sum: number, c: Record<string, unknown>) => sum + Number(c.size_words ?? 0), 0);
+      const totalChars = list.reduce((sum: number, c: Record<string, unknown>) => sum + Number(c.size_chars ?? 0), 0);
+      setStats({
+        total,
+        avgWords: list.length ? Math.round(totalWords / list.length) : 0,
+        avgChars: list.length ? Math.round(totalChars / list.length) : 0,
+      });
+    } catch {
+      setChunks([]);
+      setStats({ total: 0, avgWords: 0, avgChars: 0 });
+      toast.error('Failed to load course chunks');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void load(); }, [courseId]);
+
+  return (
+    <CourseFrame section="Chunks">
+      <Card style={{ marginBottom: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 8 }}>
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search chunks by keyword..."
+          />
+          <Button variant="secondary" onClick={() => void load(search)}>Search</Button>
+          <Button variant="secondary" onClick={() => { setSearch(''); void load(''); }}>Reset</Button>
+        </div>
+        <div style={{ display: 'flex', gap: 12, marginTop: 10, color: 'var(--text-secondary)', fontSize: 12 }}>
+          <span>Total chunks: <strong style={{ color: 'var(--text-primary)' }}>{stats.total}</strong></span>
+          <span>Avg words: <strong style={{ color: 'var(--text-primary)' }}>{stats.avgWords}</strong></span>
+          <span>Avg chars: <strong style={{ color: 'var(--text-primary)' }}>{stats.avgChars}</strong></span>
+        </div>
+      </Card>
+
+      {loading ? (
+        <div style={uiStyles.loadingCenter}><Spinner /></div>
+      ) : chunks.length === 0 ? (
+        <Card><p style={{ margin: 0, color: 'var(--text-muted)' }}>No chunks found for this course yet.</p></Card>
+      ) : (
+        <div style={{ display: 'grid', gap: 10 }}>
+          {chunks.map((chunk) => (
+            <Card key={String(chunk.id)}>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>
+                {String(chunk.content_type)} • {String(chunk.source_name)} • Chunk #{Number(chunk.chunk_index ?? 0)} • {Number(chunk.size_words ?? 0)} words
+              </div>
+              <div style={{ color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>
+                {String(chunk.preview ?? '')}
+              </div>
+            </Card>
+          ))}
         </div>
       )}
     </CourseFrame>
@@ -1865,6 +1953,7 @@ export default function FacultyPortal() {
             <Route path="courses/:courseId/quizzes" element={<FacultyQuizzes />} />
             <Route path="courses/:courseId/assignments" element={<FacultyAssignments />} />
             <Route path="courses/:courseId/files" element={<FacultyFiles />} />
+            <Route path="courses/:courseId/chunks" element={<FacultyChunks />} />
             <Route path="courses/:courseId/gradebook" element={<FacultyGradebook />} />
             <Route path="courses/:courseId/inbox" element={<FacultyCourseInbox />} />
             <Route path="courses/:courseId/settings" element={<FacultySettings />} />

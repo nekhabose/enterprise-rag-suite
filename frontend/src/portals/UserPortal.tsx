@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Routes, Route, Navigate, useParams } from 'react-router-dom';
+import { Routes, Route, Navigate, useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import SidebarLayout from '../components/shared/SidebarLayout';
 import {
   Modal, Field, Input, Select, Button, Badge, Table, StatCard,
@@ -78,6 +78,7 @@ function Courses() {
   const [courses, setCourses] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const navigate = useNavigate();
 
   useEffect(() => {
     userApi.getCourses()
@@ -107,11 +108,23 @@ function Courses() {
             </p>
           )}
           {filtered.map((course) => (
-            <div key={course.id as number} style={{
-              background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)',
-              borderRadius: '14px', padding: '22px', cursor: 'pointer',
-              transition: 'border-color 0.15s',
-            }}>
+            <div
+              key={course.id as number}
+              role="button"
+              tabIndex={0}
+              onClick={() => navigate(`/portal/content?course_id=${Number(course.id)}`)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  navigate(`/portal/content?course_id=${Number(course.id)}`);
+                }
+              }}
+              style={{
+                background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)',
+                borderRadius: '14px', padding: '22px', cursor: 'pointer',
+                transition: 'border-color 0.15s',
+              }}
+            >
               <div style={{ fontSize: '28px', marginBottom: '12px' }}>📘</div>
               <h3 style={{ margin: '0 0 8px', fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)' }}>{String(course.title)}</h3>
               {Boolean(course.subject) && <Badge style={{ marginBottom: '12px' }}>{String(course.subject)}</Badge>}
@@ -130,9 +143,12 @@ function Courses() {
 
 function ContentModule() {
   const { user, hasPermission } = useAuth();
+  const [searchParams] = useSearchParams();
+  const queryCourseId = Number(searchParams.get('course_id') ?? '');
+  const initialCourseId = Number.isFinite(queryCourseId) && queryCourseId > 0 ? queryCourseId : null;
   const isFaculty = user?.role === 'FACULTY';
   const [courses, setCourses] = useState<Record<string, unknown>[]>([]);
-  const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
+  const [selectedCourseId, setSelectedCourseId] = useState<number | null>(initialCourseId);
   const [documents, setDocuments] = useState<Record<string, unknown>[]>([]);
   const [videos, setVideos] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(true);
@@ -152,7 +168,7 @@ function ContentModule() {
       ]);
       const courseList = courseRes.data.courses ?? courseRes.data ?? [];
       setCourses(courseList);
-      const nextCourseId = courseId ?? selectedCourseId ?? (courseList[0]?.id as number | undefined) ?? null;
+      const nextCourseId = courseId ?? selectedCourseId ?? initialCourseId ?? (courseList[0]?.id as number | undefined) ?? null;
       setSelectedCourseId(nextCourseId);
       const docs = docRes.data ?? [];
       const vids = (videoRes.data ?? []).filter((v: Record<string, unknown>) =>
@@ -167,7 +183,7 @@ function ContentModule() {
     } finally {
       setLoading(false);
     }
-  }, [selectedCourseId]);
+  }, [selectedCourseId, initialCourseId]);
 
   useEffect(() => { load(); }, [load]);
 

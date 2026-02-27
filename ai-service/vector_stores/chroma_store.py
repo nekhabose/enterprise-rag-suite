@@ -44,24 +44,8 @@ class ChromaDBVectorStore(BaseVectorStore):
         self.collection_name = collection_name
         self.persist_directory = persist_directory or "./chroma_db"
         
-        # Initialize client
-        try:
-            chroma_settings = Settings(
-                anonymized_telemetry=False,
-                chroma_product_telemetry_impl="none",
-            )
-        except TypeError:
-            chroma_settings = Settings(anonymized_telemetry=False)
-
-        if persist_directory:
-            self.client = chromadb.PersistentClient(
-                path=persist_directory,
-                settings=chroma_settings
-            )
-        else:
-            self.client = chromadb.Client(
-                settings=chroma_settings
-            )
+        # Initialize client with compatibility fallbacks across Chroma versions.
+        self.client = self._build_client(persist_directory=persist_directory)
         
         # Get or create collection
         self.collection = self.client.get_or_create_collection(
@@ -70,6 +54,41 @@ class ChromaDBVectorStore(BaseVectorStore):
         )
         
         print(f"✅ ChromaDB collection '{collection_name}' initialized")
+
+    @staticmethod
+    def _build_client(persist_directory: Optional[str]):
+        try:
+            chroma_settings = Settings(
+                anonymized_telemetry=False,
+                chroma_product_telemetry_impl="none",
+            )
+        except TypeError:
+            chroma_settings = Settings(anonymized_telemetry=False)
+
+        errors: List[str] = []
+
+        # Preferred: explicit settings (telemetry disabled).
+        try:
+            if persist_directory:
+                return chromadb.PersistentClient(path=persist_directory, settings=chroma_settings)
+            return chromadb.Client(settings=chroma_settings)
+        except Exception as exc:
+            errors.append(f"settings_client={exc}")
+
+        # Fallback: minimal constructor, no explicit settings.
+        try:
+            if persist_directory:
+                return chromadb.PersistentClient(path=persist_directory)
+            return chromadb.Client()
+        except Exception as exc:
+            errors.append(f"minimal_client={exc}")
+
+        # Fallback: in-memory ephemeral client.
+        try:
+            return chromadb.EphemeralClient()
+        except Exception as exc:
+            errors.append(f"ephemeral_client={exc}")
+            raise RuntimeError("Failed to initialize Chroma client: " + " | ".join(errors))
     
     def add(
         self,

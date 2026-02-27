@@ -375,7 +375,10 @@ const ensureTables = async () => {
     ALTER TABLE documents
       ADD COLUMN IF NOT EXISTS file_size_bytes BIGINT,
       ADD COLUMN IF NOT EXISTS course_id INT REFERENCES courses(id),
-      ADD COLUMN IF NOT EXISTS is_indexed BOOLEAN DEFAULT false
+      ADD COLUMN IF NOT EXISTS is_indexed BOOLEAN DEFAULT false,
+      ADD COLUMN IF NOT EXISTS selected_store_name VARCHAR(50),
+      ADD COLUMN IF NOT EXISTS selected_store_indexed BOOLEAN,
+      ADD COLUMN IF NOT EXISTS selected_store_error TEXT
   `);
 
   await pool.query(`
@@ -384,7 +387,10 @@ const ensureTables = async () => {
       ADD COLUMN IF NOT EXISTS source_type VARCHAR(20) DEFAULT 'youtube',
       ADD COLUMN IF NOT EXISTS file_path TEXT,
       ADD COLUMN IF NOT EXISTS mime_type VARCHAR(120),
-      ADD COLUMN IF NOT EXISTS file_size_bytes BIGINT
+      ADD COLUMN IF NOT EXISTS file_size_bytes BIGINT,
+      ADD COLUMN IF NOT EXISTS selected_store_name VARCHAR(50),
+      ADD COLUMN IF NOT EXISTS selected_store_indexed BOOLEAN,
+      ADD COLUMN IF NOT EXISTS selected_store_error TEXT
   `);
 
   await pool.query(`

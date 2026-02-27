@@ -41,52 +41,51 @@ class VectorStoreFactory:
         Returns:
             BaseVectorStore instance
         """
-        from .faiss_store import FAISSVectorStore
-        from .chroma_store import ChromaDBVectorStore
-        from .qdrant_store import QdrantVectorStore
-        from .postgres_store import PostgresVectorStore
-        from .pinecone_store import PineconeVectorStore
-        
-        # Store mapping
-        stores = {
-            # FAISS
-            "faiss": lambda **kw: FAISSVectorStore(dimension=dimension, **kw),
-            "faiss_flat": lambda **kw: FAISSVectorStore(dimension=dimension, index_type="Flat", **kw),
-            "faiss_ivf": lambda **kw: FAISSVectorStore(dimension=dimension, index_type="IVFFlat", **kw),
-            "faiss_hnsw": lambda **kw: FAISSVectorStore(dimension=dimension, index_type="HNSW", **kw),
-            
-            # ChromaDB
-            "chromadb": lambda **kw: ChromaDBVectorStore(**kw),
-            "chroma": lambda **kw: ChromaDBVectorStore(**kw),
-            
-            # Qdrant
-            "qdrant": lambda **kw: QdrantVectorStore(dimension=dimension, **kw),
-            "qdrant_memory": lambda **kw: QdrantVectorStore(dimension=dimension, use_memory=True, **kw),
-            
-            # PostgreSQL (existing)
-            "postgres": lambda **kw: PostgresVectorStore(connection_string=db_connection_string, **kw),
-            "pgvector": lambda **kw: PostgresVectorStore(connection_string=db_connection_string, **kw),
-            "pinecone": lambda **kw: PineconeVectorStore(dimension=dimension, **kw),
-        }
-        
-        if strategy not in stores:
-            available = list(stores.keys())
+        available = [
+            "faiss", "faiss_flat", "faiss_ivf", "faiss_hnsw",
+            "chromadb", "chroma",
+            "qdrant", "qdrant_memory",
+            "postgres", "pgvector",
+            "pinecone",
+        ]
+        if strategy not in available:
             raise ValueError(
                 f"Unknown vector store strategy: '{strategy}'. "
                 f"Available strategies: {', '.join(available)}"
             )
-        
-        store_factory = stores[strategy]
-        
-        # Create store with appropriate parameters
+
+        # Lazy import only the selected backend so optional dependencies
+        # don't break unrelated strategies (e.g. chroma without faiss installed).
         try:
-            if strategy.startswith("postgres") or strategy == "pgvector":
+            if strategy in ("chroma", "chromadb"):
+                from .chroma_store import ChromaDBVectorStore
+                return ChromaDBVectorStore(**kwargs)
+
+            if strategy in ("postgres", "pgvector"):
                 if not db_connection_string:
                     raise ValueError("Database connection string required for PostgreSQL")
-                return store_factory(**kwargs)
-            else:
-                return store_factory(**kwargs)
-                
+                from .postgres_store import PostgresVectorStore
+                return PostgresVectorStore(connection_string=db_connection_string, **kwargs)
+
+            if strategy in ("qdrant", "qdrant_memory"):
+                from .qdrant_store import QdrantVectorStore
+                if strategy == "qdrant_memory":
+                    return QdrantVectorStore(dimension=dimension, use_memory=True, **kwargs)
+                return QdrantVectorStore(dimension=dimension, **kwargs)
+
+            if strategy == "pinecone":
+                from .pinecone_store import PineconeVectorStore
+                return PineconeVectorStore(dimension=dimension, **kwargs)
+
+            # FAISS variants
+            from .faiss_store import FAISSVectorStore
+            if strategy == "faiss_flat":
+                return FAISSVectorStore(dimension=dimension, index_type="Flat", **kwargs)
+            if strategy == "faiss_ivf":
+                return FAISSVectorStore(dimension=dimension, index_type="IVFFlat", **kwargs)
+            if strategy == "faiss_hnsw":
+                return FAISSVectorStore(dimension=dimension, index_type="HNSW", **kwargs)
+            return FAISSVectorStore(dimension=dimension, **kwargs)
         except Exception as e:
             raise Exception(f"Failed to create vector store '{strategy}': {str(e)}")
     

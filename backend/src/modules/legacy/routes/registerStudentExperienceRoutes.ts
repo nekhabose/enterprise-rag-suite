@@ -358,8 +358,11 @@ export function registerStudentExperienceRoutes(deps: LegacyRouteDeps) {
         pool.query(
           `SELECT d.id, d.filename AS name, d.uploaded_at AS created, d.uploaded_at AS last_modified,
                   u.email AS modified_by, d.file_size_bytes AS size, d.is_indexed AS status,
+                  d.selected_store_name, d.selected_store_indexed, d.selected_store_error,
                   COALESCE(dc.chunk_count, 0)::int AS chunk_count,
                   CASE
+                    WHEN d.selected_store_indexed = true THEN 'Indexed'
+                    WHEN d.selected_store_indexed = false THEN 'Failed'
                     WHEN COALESCE(dc.chunk_count, 0) > 0 THEN 'Indexed'
                     WHEN d.uploaded_at > NOW() - INTERVAL '5 minutes' THEN 'Processing'
                     ELSE 'Failed'
@@ -381,8 +384,11 @@ export function registerStudentExperienceRoutes(deps: LegacyRouteDeps) {
         pool.query(
           `SELECT v.id, COALESCE(v.title, v.youtube_url, 'Video') AS name, v.created_at AS created, v.created_at AS last_modified,
                   u.email AS modified_by, v.file_size_bytes AS size, true AS status,
+                  v.selected_store_name, v.selected_store_indexed, v.selected_store_error,
                   COALESCE(vc.chunk_count, 0)::int AS chunk_count,
                   CASE
+                    WHEN v.selected_store_indexed = true THEN 'Indexed'
+                    WHEN v.selected_store_indexed = false THEN 'Failed'
                     WHEN COALESCE(vc.chunk_count, 0) > 0 THEN 'Indexed'
                     WHEN v.created_at > NOW() - INTERVAL '10 minutes' THEN 'Processing'
                     ELSE 'Failed'

@@ -222,6 +222,8 @@ export const facultyApi = {
   moveModuleItem: (courseId: number, itemId: number, target_module_id: number) =>
     api.put(`/faculty/courses/${courseId}/modules/items/${itemId}/move`, { target_module_id }),
   getCourseFiles: (courseId: number) => api.get(`/faculty/courses/${courseId}/files`),
+  getCourseChunks: (courseId: number, params?: Record<string, unknown>) =>
+    api.get(`/faculty/courses/${courseId}/chunks`, { params }),
   getCourseFileChunks: (courseId: number, contentType: 'DOCUMENT' | 'VIDEO', sourceId: number, params?: Record<string, unknown>) =>
     api.get(`/faculty/courses/${courseId}/files/${contentType}/${sourceId}/chunks`, { params }),
   attachFileToModule: (courseId: number, data: Record<string, unknown>) => api.post(`/faculty/courses/${courseId}/files/attach`, data),

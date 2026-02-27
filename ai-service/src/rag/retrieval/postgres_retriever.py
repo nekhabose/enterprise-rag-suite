@@ -98,7 +98,22 @@ class PostgresKeywordRetriever:
                     embedding_model=embedding_model,
                 )
                 if not semantic_scores:
-                    raise RuntimeError(f"Vector store '{vector_store}' retrieval failed at runtime")
+                    # Graceful fallback when selected external store is unavailable/misconfigured.
+                    semantic_scores = self._semantic_scores_postgres(
+                        tenant_id=tenant_id,
+                        course_id=course_id,
+                        query=query,
+                        top_k=max(top_k * 2, 8),
+                        embedding_provider=embedding_provider,
+                        embedding_model=embedding_model,
+                    )
+                if not semantic_scores:
+                    semantic_scores = self._semantic_scores_in_memory(
+                        query=query,
+                        chunks=chunks,
+                        embedding_provider=embedding_provider,
+                        embedding_model=embedding_model,
+                    )
 
         rows = self._rank_chunks(
             chunks=chunks,
@@ -363,21 +378,24 @@ class PostgresKeywordRetriever:
             kwargs["cloud"] = os.getenv("PINECONE_CLOUD", "aws")
             kwargs["region"] = os.getenv("PINECONE_REGION", "us-east-1")
 
-        store = VectorStoreFactory.create(
-            strategy=vector_store,
-            dimension=len(query_vector),
-            db_connection_string=self.db_url,
-            **kwargs,
-        )
+        try:
+            store = VectorStoreFactory.create(
+                strategy=vector_store,
+                dimension=len(query_vector),
+                db_connection_string=self.db_url,
+                **kwargs,
+            )
 
-        filter_payload: Dict[str, Any] = {"tenant_id": tenant_id}
-        if course_id is not None:
-            filter_payload["course_id"] = course_id
-        results = store.search(
-            query_vector=query_vector,
-            top_k=top_k,
-            filter=filter_payload,
-        )
+            filter_payload: Dict[str, Any] = {"tenant_id": tenant_id}
+            if course_id is not None:
+                filter_payload["course_id"] = course_id
+            results = store.search(
+                query_vector=query_vector,
+                top_k=top_k,
+                filter=filter_payload,
+            )
+        except Exception:
+            return {}
         scores: Dict[str, float] = {}
         for result in results or []:
             rid = str(getattr(result, "id", "") or "")
