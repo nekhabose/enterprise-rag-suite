@@ -17,3 +17,4 @@ slowapi==0.1.9
 youtube-transcript-api
 yt-dlp
 openai-whisper
+redis==5.2.1

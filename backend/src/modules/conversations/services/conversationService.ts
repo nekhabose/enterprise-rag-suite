@@ -37,6 +37,24 @@ export function createConversationService(deps: LegacyRouteDeps) {
       }
     },
 
+    rename: async (req: AuthRequest, res: Response) => {
+      const convId = parseInt(req.params.id);
+      const { userId, tenantId } = req;
+      const title = String(req.body?.title ?? '').trim();
+      if (!title) return res.status(400).json({ error: 'title required' });
+
+      try {
+        const result = await repo.query(
+          'UPDATE conversations SET title = $1 WHERE id = $2 AND user_id = $3 AND tenant_id = $4 RETURNING id, title, created_at',
+          [title, convId, userId, tenantId],
+        );
+        if (!result.rows.length) return res.status(404).json({ error: 'Conversation not found' });
+        return res.json(result.rows[0]);
+      } catch {
+        return res.status(500).json({ error: 'Failed to rename conversation' });
+      }
+    },
+
     messages: async (req: AuthRequest, res: Response) => {
       const convId = parseInt(req.params.id);
       const { userId, tenantId } = req;

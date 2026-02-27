@@ -2,6 +2,8 @@ from __future__ import annotations
 from typing import Dict, Optional, Any, Tuple
 import os
 import time
+import json
+import hashlib
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -25,6 +27,16 @@ class RAGEngine:
         self.db_url = os.getenv("DATABASE_URL", "").strip()
         self._tenant_cache: Dict[int, Tuple[float, Dict[str, Any]]] = {}
         self._tenant_cache_ttl_seconds = 45.0
+        self._response_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+        self._response_cache_ttl_seconds = 90.0
+        self._redis = None
+        redis_url = os.getenv("REDIS_URL", "").strip()
+        if redis_url:
+            try:
+                import redis  # type: ignore
+                self._redis = redis.from_url(redis_url, decode_responses=True)
+            except Exception:
+                self._redis = None
 
     def ingest(self, tenant_id: int, source: str, text: str) -> Dict:
         cfg = self._get_tenant_ai_settings(tenant_id)
@@ -55,6 +67,21 @@ class RAGEngine:
             embedding_model=cfg.get("embedding_model"),
         )
         embedding_model = cfg.get("embedding_model")
+        cache_key = self._make_answer_cache_key(
+            tenant_id=tenant_id,
+            course_id=course_id,
+            question=question,
+            retrieval_strategy=retrieval_strategy,
+            vector_store=vector_store,
+            chunking_strategy=chunking_strategy,
+            embedding_provider=embedding_provider,
+            embedding_model=embedding_model,
+            llm_provider=str(cfg.get("llm_provider") or settings.llm_provider),
+            llm_model=cfg.get("llm_model"),
+        )
+        cached = self._get_cached_answer(cache_key)
+        if cached is not None:
+            return cached
 
         try:
             docs = self.retriever.retrieve(
@@ -83,7 +110,7 @@ class RAGEngine:
                 "sources": [],
             }
         ranked = self.reranker.rerank(docs)
-        grounded = [d for d in ranked if float(d.get("score", 0) or 0) >= 0.5 and d.get("snippet")]
+        grounded = [d for d in ranked if float(d.get("score", 0) or 0) >= 0.34 and d.get("snippet")]
 
         if not grounded:
             scope = "this course" if course_id is not None else "your available learning materials"
@@ -146,7 +173,7 @@ class RAGEngine:
                 ],
             }
 
-        return {
+        result = {
             "response": answer,
             "grounded": True,
             "provider_used": provider,
@@ -163,6 +190,64 @@ class RAGEngine:
                 for d in ranked
             ],
         }
+        self._set_cached_answer(cache_key, result)
+        return result
+
+    def _make_answer_cache_key(
+        self,
+        *,
+        tenant_id: int,
+        course_id: Optional[int],
+        question: str,
+        retrieval_strategy: str,
+        vector_store: str,
+        chunking_strategy: str,
+        embedding_provider: str,
+        embedding_model: Optional[str],
+        llm_provider: str,
+        llm_model: Optional[str],
+    ) -> str:
+        payload = {
+            "tenant_id": tenant_id,
+            "course_id": course_id,
+            "q": question.strip().lower(),
+            "retrieval_strategy": retrieval_strategy,
+            "vector_store": vector_store,
+            "chunking_strategy": chunking_strategy,
+            "embedding_provider": embedding_provider,
+            "embedding_model": embedding_model,
+            "llm_provider": llm_provider,
+            "llm_model": llm_model,
+        }
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        return f"rag:answer:{digest}"
+
+    def _get_cached_answer(self, key: str) -> Optional[Dict[str, Any]]:
+        now = time.time()
+        hit = self._response_cache.get(key)
+        if hit and (now - hit[0]) < self._response_cache_ttl_seconds:
+            return hit[1]
+
+        if self._redis is not None:
+            try:
+                raw = self._redis.get(key)
+                if raw:
+                    data = json.loads(raw)
+                    self._response_cache[key] = (now, data)
+                    return data
+            except Exception:
+                pass
+        return None
+
+    def _set_cached_answer(self, key: str, value: Dict[str, Any]) -> None:
+        now = time.time()
+        self._response_cache[key] = (now, value)
+        if self._redis is not None:
+            try:
+                self._redis.setex(key, int(self._response_cache_ttl_seconds), json.dumps(value))
+            except Exception:
+                pass
 
     def _get_tenant_ai_settings(self, tenant_id: int) -> Dict[str, Any]:
         now = time.time()

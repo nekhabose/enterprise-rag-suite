@@ -7,6 +7,7 @@ export function registerConversationRoutes(deps: LegacyRouteDeps) {
 
   app.get('/conversations', authMiddleware, requirePermission('CHAT_USE'), controller.list);
   app.post('/conversations', authMiddleware, requirePermission('CHAT_USE'), controller.create);
+  app.put('/conversations/:id', authMiddleware, requirePermission('CHAT_USE'), controller.rename);
   app.get('/conversations/:id/messages', authMiddleware, requirePermission('CHAT_USE'), controller.messages);
   app.delete('/conversations/:id', authMiddleware, requirePermission('CHAT_USE'), controller.remove);
   app.post('/chat/send', authMiddleware, requirePermission('CHAT_USE'), controller.send);

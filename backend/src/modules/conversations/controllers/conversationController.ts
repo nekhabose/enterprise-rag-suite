@@ -9,6 +9,7 @@ export function createConversationController(deps: LegacyRouteDeps) {
   return {
     list: (req: AuthRequest, res: Response) => service.list(req, res),
     create: (req: AuthRequest, res: Response) => service.create(req, res),
+    rename: (req: AuthRequest, res: Response) => service.rename(req, res),
     messages: (req: AuthRequest, res: Response) => service.messages(req, res),
     remove: (req: AuthRequest, res: Response) => service.remove(req, res),
     send: (req: AuthRequest, res: Response) => service.send(req, res),

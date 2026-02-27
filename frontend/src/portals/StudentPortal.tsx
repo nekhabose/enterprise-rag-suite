@@ -1068,7 +1068,82 @@ function CourseAITutorSection() {
   const [messages, setMessages] = useState<TutorMessage[]>([]);
   const [question, setQuestion] = useState('');
   const [conversationId, setConversationId] = useState<number | null>(null);
+  const [conversations, setConversations] = useState<Record<string, unknown>[]>([]);
+  const [titleDraft, setTitleDraft] = useState('');
   const [sending, setSending] = useState(false);
+
+  const loadConversations = async () => {
+    try {
+      const res = await userApi.getConversations();
+      setConversations(res.data ?? []);
+    } catch {
+      setConversations([]);
+    }
+  };
+
+  useEffect(() => {
+    void loadConversations();
+  }, []);
+
+  const openConversation = async (id: number) => {
+    setConversationId(id);
+    try {
+      const res = await userApi.getConversation(id);
+      const mapped = (res.data ?? []).map((m: Record<string, unknown>) => {
+        let parsedSources: Array<{ source?: string; snippet?: string; score?: number }> = [];
+        const rawSources = m.sources;
+        if (Array.isArray(rawSources)) {
+          parsedSources = rawSources as Array<{ source?: string; snippet?: string; score?: number }>;
+        } else if (typeof rawSources === 'string') {
+          try {
+            const js = JSON.parse(rawSources);
+            if (Array.isArray(js)) parsedSources = js as Array<{ source?: string; snippet?: string; score?: number }>;
+          } catch {
+            parsedSources = [];
+          }
+        }
+        return {
+          role: String(m.role ?? 'assistant') === 'user' ? 'user' : 'assistant',
+          content: String(m.content ?? ''),
+          grounded: true,
+          sources: parsedSources,
+        } as TutorMessage;
+      });
+      setMessages(mapped);
+      const selected = (conversations.find((c) => Number(c.id) === id) ?? {}) as Record<string, unknown>;
+      setTitleDraft(String(selected.title ?? ''));
+    } catch {
+      toast.error('Failed to load conversation');
+    }
+  };
+
+  const createConversation = async () => {
+    try {
+      const title = titleDraft.trim() || 'New Conversation';
+      const res = await userApi.createConversation({ title });
+      const conv = res.data as Record<string, unknown>;
+      setConversationId(Number(conv.id));
+      setMessages([]);
+      setTitleDraft(String(conv.title ?? title));
+      await loadConversations();
+      toast.success('New chat created');
+    } catch {
+      toast.error('Failed to create conversation');
+    }
+  };
+
+  const renameConversation = async () => {
+    if (!conversationId) return;
+    const nextTitle = titleDraft.trim();
+    if (!nextTitle) return;
+    try {
+      await userApi.renameConversation(conversationId, nextTitle);
+      await loadConversations();
+      toast.success('Chat renamed');
+    } catch {
+      toast.error('Failed to rename chat');
+    }
+  };
 
   const send = async () => {
     const trimmed = question.trim();
@@ -1086,7 +1161,10 @@ function CourseAITutorSection() {
         course_id: parsedCourseId,
       });
       if (result.data?.conversation_id) {
-        setConversationId(Number(result.data.conversation_id));
+        const nextId = Number(result.data.conversation_id);
+        setConversationId(nextId);
+        if (!titleDraft.trim()) setTitleDraft(`Chat ${new Date().toLocaleString()}`);
+        void loadConversations();
       }
       setMessages((prev) => [
         ...prev,
@@ -1120,6 +1198,29 @@ function CourseAITutorSection() {
         <p style={{ marginTop: 0, color: 'var(--text-muted)' }}>
           Ask questions in plain English. Answers are grounded in this course&apos;s uploaded documents and lecture links.
         </p>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto auto', gap: '8px', marginBottom: 8 }}>
+          <Select
+            value={conversationId ?? ''}
+            onChange={(e) => {
+              const id = Number(e.target.value);
+              if (Number.isFinite(id) && id > 0) void openConversation(id);
+            }}
+          >
+            <option value="">Select chat</option>
+            {conversations.map((c) => (
+              <option key={String(c.id)} value={String(c.id)}>
+                {String(c.title ?? `Conversation ${String(c.id)}`)}
+              </option>
+            ))}
+          </Select>
+          <Input
+            value={titleDraft}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            placeholder="Chat title"
+          />
+          <Button size="sm" variant="secondary" onClick={() => void renameConversation()} disabled={!conversationId}>Rename</Button>
+          <Button size="sm" variant="secondary" onClick={() => void createConversation()}>New Chat</Button>
+        </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '8px' }}>
           <Input
             value={question}

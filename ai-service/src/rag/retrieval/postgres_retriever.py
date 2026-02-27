@@ -58,8 +58,12 @@ class PostgresKeywordRetriever:
             embedding_provider_raw=embedding_provider_raw,
             embedding_model_raw=embedding_model_raw,
         )
-        sources = self._collect_source_texts(tenant_id=tenant_id, course_id=course_id, limit=20)
-        chunks = self._build_chunks_from_sources(sources=sources, chunking_strategy=chunking_strategy, max_chunks=180)
+        # Fast path: use persisted indexed chunks directly (course + tenant scoped).
+        chunks = self._load_indexed_chunks(tenant_id=tenant_id, course_id=course_id, limit=320, tokens=tokens)
+        if not chunks:
+            # Fallback path for legacy/non-indexed content.
+            sources = self._collect_source_texts(tenant_id=tenant_id, course_id=course_id, limit=20)
+            chunks = self._build_chunks_from_sources(sources=sources, chunking_strategy=chunking_strategy, max_chunks=180)
         if not chunks:
             return []
 
@@ -123,6 +127,64 @@ class PostgresKeywordRetriever:
             }
             for idx, r in enumerate(merged[:top_k])
         ]
+
+    def _load_indexed_chunks(self, tenant_id: int, course_id: Optional[int], limit: int, tokens: List[str]) -> List[Dict[str, str]]:
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                course_clause = ""
+                params: List[object] = [tenant_id]
+                if course_id is not None:
+                    course_clause = """
+                      AND (
+                        (d.id IS NOT NULL AND d.course_id = %s)
+                        OR
+                        (v.id IS NOT NULL AND v.course_id = %s)
+                      )
+                    """
+                    params.extend([course_id, course_id])
+                params.append(limit)
+                cur.execute(
+                    f"""
+                    SELECT
+                      CASE
+                        WHEN d.id IS NOT NULL THEN CONCAT('document:', d.id, ':', c.chunk_index)
+                        ELSE CONCAT('video:', v.id, ':', c.chunk_index)
+                      END AS chunk_id,
+                      COALESCE(d.filename, v.title, v.youtube_url, 'Content') AS source_name,
+                      CASE
+                        WHEN d.id IS NOT NULL THEN CONCAT('document:', d.id)
+                        ELSE CONCAT('video:', v.id)
+                      END AS source_id,
+                      c.content AS text
+                    FROM chunks c
+                    LEFT JOIN documents d ON d.id = c.document_id
+                    LEFT JOIN videos v ON v.id = c.video_id
+                    WHERE c.tenant_id = %s
+                      AND c.content IS NOT NULL
+                      AND LENGTH(TRIM(c.content)) > 20
+                      {course_clause}
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                rows = list(cur.fetchall())
+
+        out: List[Dict[str, str]] = []
+        for row in rows:
+            text = self._normalize_extracted_text(str(row.get("text") or ""))
+            if not text or self._is_low_quality_chunk(text):
+                continue
+            snippet = self._best_snippet(text, tokens, max_len=380)
+            if not snippet:
+                continue
+            out.append({
+                "source_name": str(row.get("source_name") or "content"),
+                "source_id": str(row.get("source_id") or "source"),
+                "chunk_id": str(row.get("chunk_id") or ""),
+                "snippet": snippet,
+                "text": text,
+            })
+        return out
 
     def _resolve_embedding_choice(
         self,
@@ -411,17 +473,30 @@ class PostgresKeywordRetriever:
             elif retrieval_strategy == "semantic":
                 score = s
             else:
-                score = (0.65 * s) + (0.35 * k)
+                score = (0.75 * s) + (0.25 * k)
             if score <= 0:
                 continue
             rows.append({
                 "source_name": chunk.get("source_name"),
                 "source_id": chunk.get("source_id"),
                 "snippet": chunk.get("snippet"),
-                "score": max(0.52, min(0.98, score)),
+                "score": max(0.0, min(0.99, score)),
             })
         rows.sort(key=lambda r: float(r.get("score", 0.0)), reverse=True)
-        return rows[:max(top_k * 2, top_k)]
+        # Diversity bias: avoid taking too many chunks from a single source.
+        diverse: List[Dict] = []
+        source_counts: Dict[str, int] = {}
+        for row in rows:
+            source = str(row.get("source_id") or row.get("source_name") or "")
+            count = source_counts.get(source, 0)
+            adjusted = float(row.get("score", 0.0)) - (0.08 * count)
+            if adjusted <= 0:
+                continue
+            diverse.append({**row, "score": adjusted})
+            source_counts[source] = count + 1
+            if len(diverse) >= max(top_k * 2, top_k):
+                break
+        return diverse
 
     @staticmethod
     def _normalize_chunking_strategy(value: str) -> str:
@@ -653,7 +728,30 @@ class PostgresKeywordRetriever:
             lambda m: m.group(0).replace(" ", ""),
             normalized,
         )
+        normalized = re.sub(
+            r"About Press Copyright Contact us Creators Advertise Developers Terms Privacy Policy.*?Google LLC",
+            " ",
+            normalized,
+            flags=re.IGNORECASE,
+        )
         return re.sub(r"\s+", " ", normalized).strip()
+
+    @staticmethod
+    def _is_low_quality_chunk(text: str) -> bool:
+        low = text.lower()
+        boilerplate_hits = sum(1 for token in [
+            "about press copyright",
+            "privacy policy",
+            "terms",
+            "youtube works",
+            "google llc",
+        ] if token in low)
+        if boilerplate_hits >= 2:
+            return True
+        alpha = sum(ch.isalpha() for ch in text)
+        if alpha < 20:
+            return True
+        return False
 
     @staticmethod
     def _merge_rows(primary: List[Dict], secondary: List[Dict], top_k: int) -> List[Dict]:
