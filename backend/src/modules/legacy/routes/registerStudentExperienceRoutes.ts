@@ -205,12 +205,15 @@ export function registerStudentExperienceRoutes(deps: LegacyRouteDeps) {
                 cmi.document_id,
                 cmi.quiz_id,
                 cmi.video_id,
+                v.youtube_url AS video_youtube_url,
+                COALESCE(v.source_type, 'youtube') AS video_source_type,
                 cmi.link_url,
                 cmi.due_at,
                 COALESCE(smp.status, 'NOT_STARTED') AS progress_status,
                 COALESCE(smp.status = 'COMPLETED', false) AS completed
          FROM course_modules cm
          LEFT JOIN course_module_items cmi ON cmi.module_id = cm.id AND cmi.is_published = true
+         LEFT JOIN videos v ON v.id = cmi.video_id
          LEFT JOIN student_module_item_progress smp
            ON smp.module_item_id = cmi.id AND smp.user_id = $2
          WHERE cm.course_id = $1 AND cm.is_published = true
@@ -239,6 +242,8 @@ export function registerStudentExperienceRoutes(deps: LegacyRouteDeps) {
             document_id: row.document_id,
             quiz_id: row.quiz_id,
             video_id: row.video_id,
+            youtube_url: row.video_youtube_url,
+            source_type: row.video_source_type,
             link_url: row.link_url,
             due_at: row.due_at,
             completed: row.completed,

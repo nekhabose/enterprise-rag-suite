@@ -296,6 +296,7 @@ function CourseModulesSection() {
   const [modules, setModules] = useState<Record<string, unknown>[]>([]);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
+  const [previewItem, setPreviewItem] = useState<Record<string, unknown> | null>(null);
   useEffect(() => {
     if (!courseId) return;
     studentApi.getCourseModules(Number(courseId))
@@ -324,6 +325,25 @@ function CourseModulesSection() {
     if (type === 'assignment') return '✅';
     if (type === 'link') return '🔗';
     return '📌';
+  };
+
+  const toYouTubeEmbedUrl = (url: string): string | null => {
+    try {
+      const input = String(url || '').trim();
+      if (!input) return null;
+      const parsed = new URL(input);
+      if (parsed.hostname.includes('youtu.be')) {
+        const id = parsed.pathname.replace('/', '').trim();
+        return id ? `https://www.youtube.com/embed/${id}` : null;
+      }
+      if (parsed.hostname.includes('youtube.com')) {
+        const id = parsed.searchParams.get('v');
+        return id ? `https://www.youtube.com/embed/${id}` : null;
+      }
+      return null;
+    } catch {
+      return null;
+    }
   };
 
   return (
@@ -358,9 +378,48 @@ function CourseModulesSection() {
               {!collapsed[moduleId] && (
                 <div>
                   {items.map((item) => (
-                    <label key={String(item.module_item_id ?? item.key)} style={{ display: 'grid', gridTemplateColumns: '26px 1fr auto', gap: '10px', alignItems: 'center', padding: '10px 12px', borderTop: '1px solid var(--border-subtle)' }}>
+                    <div key={String(item.module_item_id ?? item.key)} style={{ display: 'grid', gridTemplateColumns: '26px 1fr auto auto', gap: '10px', alignItems: 'center', padding: '10px 12px', borderTop: '1px solid var(--border-subtle)' }}>
                       <span>{itemIcon(String(item.item_type))}</span>
                       <span style={{ color: 'var(--text-primary)' }}>{String(item.title)}</span>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        {String(item.item_type) === 'document' && Number(item.document_id) > 0 && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => setPreviewItem({ ...item, content_type: 'DOCUMENT', id: Number(item.document_id) })}
+                              style={{ border: 'none', background: 'transparent', color: 'var(--brand-700)', cursor: 'pointer', padding: 0 }}
+                            >
+                              Preview
+                            </button>
+                            <a href={`/api/documents/${item.document_id}/download`} style={{ color: 'var(--brand-700)' }}>Download</a>
+                          </>
+                        )}
+                        {String(item.item_type) === 'video' && Number(item.video_id) > 0 && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => setPreviewItem({
+                                ...item,
+                                content_type: 'VIDEO',
+                                id: Number(item.video_id),
+                                source_type: String(item.source_type ?? 'youtube'),
+                                youtube_url: item.youtube_url,
+                              })}
+                              style={{ border: 'none', background: 'transparent', color: 'var(--brand-700)', cursor: 'pointer', padding: 0 }}
+                            >
+                              Preview
+                            </button>
+                            {String(item.source_type ?? 'youtube') === 'upload' ? (
+                              <a href={`/api/videos/${item.video_id}/download`} style={{ color: 'var(--brand-700)' }}>Download</a>
+                            ) : (
+                              Boolean(item.youtube_url) && <a href={String(item.youtube_url)} target="_blank" rel="noreferrer" style={{ color: 'var(--brand-700)' }}>Open Link</a>
+                            )}
+                          </>
+                        )}
+                        {String(item.item_type) === 'link' && typeof item.link_url === 'string' && item.link_url.trim().length > 0 && (
+                          <a href={item.link_url} target="_blank" rel="noreferrer" style={{ color: 'var(--brand-700)' }}>Open Link</a>
+                        )}
+                      </div>
                       <input
                         type="checkbox"
                         checked={Boolean(item.completed)}
@@ -382,7 +441,7 @@ function CourseModulesSection() {
                           });
                         }}
                       />
-                    </label>
+                    </div>
                   ))}
                 </div>
               )}
@@ -390,6 +449,67 @@ function CourseModulesSection() {
           );
         })}
       </div>
+      {previewItem && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.45)',
+            display: 'grid',
+            placeItems: 'center',
+            zIndex: 60,
+            padding: 16,
+          }}
+          onClick={() => setPreviewItem(null)}
+        >
+          <div onClick={(e) => e.stopPropagation()}>
+            <Card style={{ width: 'min(1100px, 95vw)', height: 'min(85vh, 900px)', display: 'grid', gridTemplateRows: 'auto 1fr' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <h4 style={{ margin: 0, color: 'var(--text-primary)' }}>{String(previewItem.title ?? 'Preview')}</h4>
+                <Button size="sm" variant="secondary" onClick={() => setPreviewItem(null)}>Close</Button>
+              </div>
+              <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 10, overflow: 'hidden', background: 'var(--bg-canvas)' }}>
+                {String(previewItem.content_type) === 'DOCUMENT' && (
+                  <iframe
+                    title="Document preview"
+                    src={`/api/documents/${previewItem.id}/preview`}
+                    style={{ width: '100%', height: '100%', border: 'none' }}
+                  />
+                )}
+                {String(previewItem.content_type) === 'VIDEO' && String(previewItem.source_type ?? 'youtube') === 'upload' && (
+                  <video
+                    controls
+                    preload="metadata"
+                    style={{ width: '100%', height: '100%', background: '#000' }}
+                    src={`/api/videos/${previewItem.id}/stream`}
+                  />
+                )}
+                {String(previewItem.content_type) === 'VIDEO' && String(previewItem.source_type ?? 'youtube') !== 'upload' && (
+                  (() => {
+                    const embed = toYouTubeEmbedUrl(String(previewItem.youtube_url ?? ''));
+                    if (!embed) {
+                      return (
+                        <div style={{ padding: 16, color: 'var(--text-secondary)' }}>
+                          This video link cannot be embedded. Use &quot;Open Link&quot; to view externally.
+                        </div>
+                      );
+                    }
+                    return (
+                      <iframe
+                        title="YouTube preview"
+                        src={embed}
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowFullScreen
+                        style={{ width: '100%', height: '100%', border: 'none' }}
+                      />
+                    );
+                  })()
+                )}
+              </div>
+            </Card>
+          </div>
+        </div>
+      )}
     </CourseFrame>
   );
 }
