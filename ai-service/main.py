@@ -659,6 +659,8 @@ async def chat(
         "grounded": rag_result.get("grounded", True),
         "provider_used": rag_result.get("provider_used"),
         "model_used": rag_result.get("model_used"),
+        "llm_fallback": rag_result.get("llm_fallback", False),
+        "warning": rag_result.get("warning"),
         "retrieval_strategy_used": rag_result.get("retrieval_strategy_used"),
         "vector_store_used": rag_result.get("vector_store_used"),
         "chunking_strategy_used": rag_result.get("chunking_strategy_used"),

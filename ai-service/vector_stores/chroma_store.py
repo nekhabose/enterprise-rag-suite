@@ -165,7 +165,7 @@ class ChromaDBVectorStore(BaseVectorStore):
             
             # Add filter if provided
             if filter:
-                query_params["where"] = filter
+                query_params["where"] = self._normalize_where(filter)
             
             # Search
             results = self.collection.query(**query_params)
@@ -187,6 +187,31 @@ class ChromaDBVectorStore(BaseVectorStore):
         except Exception as e:
             print(f"❌ ChromaDB search error: {str(e)}")
             return []
+
+    @staticmethod
+    def _normalize_where(filter_value: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Chroma expects a single top-level operator in `where`.
+        Convert plain field maps like {"tenant_id": 2, "course_id": 2}
+        into {"$and": [{"tenant_id": {"$eq": 2}}, {"course_id": {"$eq": 2}}]}.
+        """
+        if not isinstance(filter_value, dict) or not filter_value:
+            return {}
+
+        operator_keys = [key for key in filter_value.keys() if str(key).startswith("$")]
+        if operator_keys:
+            return filter_value
+
+        clauses: List[Dict[str, Any]] = []
+        for key, value in filter_value.items():
+            if isinstance(value, dict):
+                clauses.append({key: value})
+            else:
+                clauses.append({key: {"$eq": value}})
+
+        if len(clauses) == 1:
+            return clauses[0]
+        return {"$and": clauses}
     
     def delete(self, ids: List[str]) -> bool:
         """

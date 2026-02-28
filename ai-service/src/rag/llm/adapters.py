@@ -48,7 +48,7 @@ class TenantAwareProvider(BaseLLM):
 
     def _openai_answer(self, prompt: str, model: Optional[str], temperature: float, max_tokens: int) -> str:
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        if not api_key:
+        if (not api_key) or api_key in {"your-openai-api-key", "sk-your-key"} or api_key.lower().startswith("your-"):
             raise RuntimeError("OPENAI_API_KEY missing")
 
         resolved_model = str(model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")).strip()
@@ -85,7 +85,7 @@ class TenantAwareProvider(BaseLLM):
         from groq import Groq
 
         api_key = os.getenv("GROQ_API_KEY", "").strip()
-        if not api_key:
+        if (not api_key) or api_key in {"your-groq-api-key"} or api_key.lower().startswith("your-"):
             raise RuntimeError("GROQ_API_KEY missing")
         resolved_model = str(model or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")).strip()
 
