@@ -471,6 +471,7 @@ function Chat() {
         message: text,
         conversationId,
         tenantId: user?.tenantId,
+        top_k: 10,
       });
       setConversationId(res.data.conversation_id ?? conversationId);
       setMessages((prev) => [...prev, {

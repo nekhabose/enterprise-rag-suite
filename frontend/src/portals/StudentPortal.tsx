@@ -1232,6 +1232,7 @@ function CourseAITutorSection() {
         message: trimmed,
         conversation_id: conversationId,
         course_id: parsedCourseId,
+        top_k: 10,
       });
       if (result.data?.conversation_id) {
         const nextId = Number(result.data.conversation_id);
