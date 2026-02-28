@@ -223,7 +223,7 @@ def _coerce_pgvector_dim(vec: List[float], dim: int = 1536) -> List[float]:
 
 
 def _normalize_text_for_chunking(text: str, strategy: str) -> str:
-    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    raw = str(text or "").replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
     # Preserve line boundaries for structure-aware chunkers.
     if strategy in ("semantic", "paragraph", "page_based", "sentence", "parent_child", "recursive"):
         lines = [re.sub(r"[ \t\f\v]+", " ", line).strip() for line in raw.split("\n")]
@@ -241,6 +241,47 @@ def _normalize_text_for_chunking(text: str, strategy: str) -> str:
         return re.sub(r"\n{3,}", "\n\n", content)
     # Dense fixed-size style chunkers can work on a flattened text stream.
     return re.sub(r"\s+", " ", raw).strip()
+
+
+def _sanitize_chunk_text(value: str) -> str:
+    text = str(value or "").replace("\x00", "")
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _compact_chunks(chunks: List[str], min_words: int = 25) -> List[str]:
+    compacted: List[str] = []
+    pending_small = ""
+
+    for raw_chunk in chunks:
+        chunk = _sanitize_chunk_text(raw_chunk)
+        if not chunk:
+            continue
+        if len(chunk) < 8:
+            continue
+
+        if pending_small:
+            chunk = f"{pending_small}\n{chunk}".strip()
+            pending_small = ""
+
+        word_count = len(chunk.split())
+        if word_count < min_words:
+            if compacted:
+                compacted[-1] = f"{compacted[-1]}\n{chunk}".strip()
+            else:
+                pending_small = chunk
+            continue
+
+        compacted.append(chunk)
+
+    if pending_small:
+        if compacted:
+            compacted[-1] = f"{compacted[-1]}\n{pending_small}".strip()
+        else:
+            compacted.append(pending_small)
+
+    return [_sanitize_chunk_text(chunk) for chunk in compacted if _sanitize_chunk_text(chunk)]
 
 
 def _extract_video_id(url: str) -> Optional[str]:
@@ -448,7 +489,8 @@ def _chunk_embed_store(
 
     chunk_profile = _chunking_profile(chunking_strategy)
     chunker = FactoryChunker(chunking_strategy)
-    chunks = [c.strip() for c in chunker.chunk(content) if c and str(c).strip()]
+    raw_chunks = [str(c) for c in chunker.chunk(content) if c and str(c).strip()]
+    chunks = _compact_chunks(raw_chunks)
     if not chunks:
         return {"chunks_created": 0, "warnings": ["No chunks generated from content"], "chunking_strategy": chunking_strategy, "vector_store": cfg.get("vector_store")}
 
@@ -482,6 +524,7 @@ def _chunk_embed_store(
                         VALUES (%s,%s,%s,%s::vector,%s,%s::jsonb)
                     """
                     for idx, (chunk, vec) in enumerate(zip(chunks, vectors)):
+                        chunk = _sanitize_chunk_text(chunk)
                         vec1536 = _coerce_pgvector_dim([float(x) for x in vec], dim=1536)
                         cur.execute(
                             insert_sql,
@@ -512,6 +555,7 @@ def _chunk_embed_store(
                         VALUES (%s,%s,%s,%s::vector,%s,%s::jsonb)
                     """
                     for idx, (chunk, vec) in enumerate(zip(chunks, vectors)):
+                        chunk = _sanitize_chunk_text(chunk)
                         vec1536 = _coerce_pgvector_dim([float(x) for x in vec], dim=1536)
                         cur.execute(
                             insert_sql,

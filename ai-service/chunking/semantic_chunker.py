@@ -17,6 +17,8 @@ class SemanticChunker(BaseChunker):
     def _is_header(self, line: str) -> bool:
         """Detect if a line is likely a header"""
         line = line.strip()
+        if len(line) < 3:
+            return False
         
         # Check for markdown-style headers
         if re.match(r'^#{1,6}\s+', line):
@@ -27,7 +29,7 @@ class SemanticChunker(BaseChunker):
             return True
         
         # Check for ALL CAPS headers (short lines)
-        if line.isupper() and len(line.split()) <= 10:
+        if len(line) >= 4 and line.isupper() and len(line.split()) <= 10:
             return True
         
         # Check for underlined headers (next line is ===== or -----)

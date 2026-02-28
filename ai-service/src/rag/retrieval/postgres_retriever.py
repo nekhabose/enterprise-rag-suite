@@ -744,24 +744,88 @@ class PostgresKeywordRetriever:
     @staticmethod
     def _extract_pdf_text(file_path: str) -> str:
         try:
+            import fitz  # type: ignore
+            doc = fitz.open(file_path)
+            try:
+                page_texts: List[str] = []
+                for page_num, page in enumerate(doc, start=1):
+                    extracted = (page.get_text("text") or "").replace("\x00", "")
+                    normalized_page = PostgresKeywordRetriever._normalize_extracted_text(extracted)
+                    if normalized_page:
+                        page_texts.append(f"--- Page {page_num} ---\n{normalized_page}")
+                if page_texts:
+                    return "\n\n".join(page_texts).strip()
+            finally:
+                doc.close()
+        except Exception:
+            pass
+
+        try:
+            from pypdf import PdfReader  # type: ignore
+            reader = PdfReader(file_path)
+            page_texts: List[str] = []
+            for page in reader.pages:
+                extracted = (page.extract_text() or "").replace("\x00", "")
+                normalized_page = PostgresKeywordRetriever._normalize_extracted_text(extracted)
+                if normalized_page:
+                    page_texts.append(normalized_page)
+            if page_texts:
+                return "\n\n".join(page_texts).strip()
+        except Exception:
+            pass
+
+        try:
+            import PyPDF2  # type: ignore
+            with open(file_path, "rb") as file:
+                reader = PyPDF2.PdfReader(file)
+                page_texts: List[str] = []
+                for page in reader.pages:
+                    extracted = (page.extract_text() or "").replace("\x00", "")
+                    normalized_page = PostgresKeywordRetriever._normalize_extracted_text(extracted)
+                    if normalized_page:
+                        page_texts.append(normalized_page)
+                if page_texts:
+                    return "\n\n".join(page_texts).strip()
+        except Exception:
+            pass
+
+        try:
+            import pdfplumber  # type: ignore
+            with pdfplumber.open(file_path) as pdf:
+                page_texts: List[str] = []
+                for page_num, page in enumerate(pdf.pages, start=1):
+                    extracted = (page.extract_text() or "").replace("\x00", "")
+                    normalized_page = PostgresKeywordRetriever._normalize_extracted_text(extracted)
+                    if normalized_page:
+                        page_texts.append(f"--- Page {page_num} ---\n{normalized_page}")
+                if page_texts:
+                    return "\n\n".join(page_texts).strip()
+        except Exception:
+            pass
+
+        try:
             with open(file_path, "rb") as f:
                 raw = f.read()
         except Exception:
             return ""
 
-        chunks: List[str] = []
+        sections: List[str] = []
         for stream in re.finditer(rb"stream\r?\n(.*?)\r?\nendstream", raw, flags=re.S):
             payload = stream.group(1)
             for candidate in (payload, PostgresKeywordRetriever._maybe_decompress(payload)):
                 if not candidate:
                     continue
-                chunks.extend(PostgresKeywordRetriever._extract_pdf_text_ops(candidate))
+                extracted = PostgresKeywordRetriever._extract_pdf_text_ops(candidate)
+                if extracted:
+                    sections.append("\n".join(extracted))
 
-        if not chunks:
-            return PostgresKeywordRetriever._extract_printable_text(raw)
+        if not sections:
+            printable = PostgresKeywordRetriever._extract_printable_text(raw)
+            return "" if PostgresKeywordRetriever._looks_like_pdf_object_garbage(printable) else printable
 
-        text = " ".join(chunks)
-        return PostgresKeywordRetriever._normalize_extracted_text(text)
+        text = "\n\n".join(sections)
+        normalized = PostgresKeywordRetriever._normalize_extracted_text(text)
+        return "" if PostgresKeywordRetriever._looks_like_pdf_object_garbage(normalized) else normalized
 
     @staticmethod
     def _maybe_decompress(data: bytes) -> bytes:
@@ -787,18 +851,24 @@ class PostgresKeywordRetriever:
             s = data.decode("latin-1", errors="ignore")
         except Exception:
             return ""
-        s = s.replace("\\(", "(").replace("\\)", ")").replace("\\n", " ").replace("\\r", " ").replace("\\t", " ")
-        return re.sub(r"\s+", " ", s).strip()
+        s = s.replace("\x00", "")
+        s = s.replace("\\(", "(").replace("\\)", ")").replace("\\n", "\n").replace("\\r", "\n").replace("\\t", " ")
+        lines = [re.sub(r"[ \t\f\v]+", " ", line).strip() for line in s.split("\n")]
+        return "\n".join([line for line in lines if line]).strip()
 
     @staticmethod
     def _extract_printable_text(raw: bytes) -> str:
-        text = raw.decode("latin-1", errors="ignore")
+        text = raw.decode("latin-1", errors="ignore").replace("\x00", "")
         runs = re.findall(r"[A-Za-z0-9][A-Za-z0-9 ,.;:()/_+\-\n]{20,}", text)
-        return PostgresKeywordRetriever._normalize_extracted_text(" ".join(runs))
+        return PostgresKeywordRetriever._normalize_extracted_text("\n\n".join(runs))
 
     @staticmethod
     def _normalize_extracted_text(text: str) -> str:
-        normalized = re.sub(r"\s+", " ", text).strip()
+        raw = str(text or "").replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
+        lines = [re.sub(r"[ \t\f\v]+", " ", line).strip() for line in raw.split("\n")]
+        lines = PostgresKeywordRetriever._repair_fragmented_lines(lines)
+        normalized = "\n".join(lines)
+        normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
         # Collapse PDF artifacts like "P y t h o n" -> "Python"
         normalized = re.sub(
             r"\b(?:[A-Za-z]\s+){2,}[A-Za-z]\b",
@@ -811,7 +881,52 @@ class PostgresKeywordRetriever:
             normalized,
             flags=re.IGNORECASE,
         )
-        return re.sub(r"\s+", " ", normalized).strip()
+        normalized = re.sub(r" ?\n ?", "\n", normalized)
+        normalized = re.sub(r"(?im)^(?:Filter/FlateDecode|/Type/ObjStm|/Length\s+\d+|/First\s+\d+|endstream|stream)\s*$", "", normalized)
+        normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
+        return normalized
+
+    @staticmethod
+    def _repair_fragmented_lines(lines: List[str]) -> List[str]:
+        repaired: List[str] = []
+        char_buffer: List[str] = []
+
+        def flush_chars():
+            nonlocal char_buffer
+            if not char_buffer:
+                return
+            joined = "".join(char_buffer).strip()
+            if joined:
+                repaired.append(joined)
+            char_buffer = []
+
+        for line in lines:
+            token = str(line or "").strip()
+            if not token:
+                flush_chars()
+                if repaired and repaired[-1] != "":
+                    repaired.append("")
+                continue
+
+            # Many PDFs extract one glyph per line. Reconstruct those runs.
+            if len(token) == 1 and re.match(r"[A-Za-z0-9.,;:!?()\-/]", token):
+                char_buffer.append(token)
+                continue
+
+            flush_chars()
+            repaired.append(token)
+
+        flush_chars()
+
+        text = "\n".join(repaired)
+        # Collapse words broken into alternating fragments, e.g. "Py thon" -> "Python".
+        text = re.sub(
+            r"\b([A-Za-z]{1,3})\s+([A-Za-z]{1,3})(?=\b)",
+            lambda m: m.group(1) + m.group(2),
+            text,
+        )
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return [line for line in text.split("\n")]
 
     @staticmethod
     def _is_low_quality_chunk(text: str) -> bool:
@@ -829,6 +944,24 @@ class PostgresKeywordRetriever:
         if alpha < 20:
             return True
         return False
+
+    @staticmethod
+    def _looks_like_pdf_object_garbage(text: str) -> bool:
+        sample = (text or "")[:4000]
+        if not sample.strip():
+            return True
+        markers = [
+            "Filter/FlateDecode",
+            "/Type/ObjStm",
+            "/Length ",
+            "/First ",
+            "endstream",
+            "obj",
+        ]
+        hits = sum(1 for marker in markers if marker in sample)
+        alnum_ratio = (sum(ch.isalnum() for ch in sample) / max(len(sample), 1))
+        # Object-stream metadata tends to repeat these markers and have low natural-language density.
+        return hits >= 3 and alnum_ratio < 0.85
 
     @staticmethod
     def _merge_rows(primary: List[Dict], secondary: List[Dict], top_k: int) -> List[Dict]:
