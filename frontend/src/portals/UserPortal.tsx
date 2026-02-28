@@ -6,6 +6,7 @@ import {
   Spinner, PageHeader, Card, Tabs, SearchInput, Textarea,
 } from '../components/shared/UI';
 import { autoGrid, uiStyles } from '../shared/ui/styleHelpers';
+import { facultyApi } from '../shared/api/client';
 import { userApi } from '../utils/api';
 import { useAuth } from '../hooks/useAuth';
 import toast from 'react-hot-toast';
@@ -151,6 +152,8 @@ function ContentModule() {
   const [selectedCourseId, setSelectedCourseId] = useState<number | null>(initialCourseId);
   const [documents, setDocuments] = useState<Record<string, unknown>[]>([]);
   const [videos, setVideos] = useState<Record<string, unknown>[]>([]);
+  const [chunks, setChunks] = useState<Record<string, unknown>[]>([]);
+  const [chunkSearch, setChunkSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [submittingYt, setSubmittingYt] = useState(false);
@@ -174,16 +177,21 @@ function ContentModule() {
       const vids = (videoRes.data ?? []).filter((v: Record<string, unknown>) =>
         nextCourseId ? Number(v.course_id) === Number(nextCourseId) : true,
       );
+      const chunkRows = isFaculty && nextCourseId
+        ? ((await facultyApi.getCourseChunks(Number(nextCourseId), { limit: 50 })).data?.chunks ?? [])
+        : [];
       setDocuments(docs);
       setVideos(vids);
+      setChunks(chunkRows);
     } catch {
       setCourses([]);
       setDocuments([]);
       setVideos([]);
+      setChunks([]);
     } finally {
       setLoading(false);
     }
-  }, [selectedCourseId, initialCourseId]);
+  }, [selectedCourseId, initialCourseId, isFaculty]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -266,6 +274,16 @@ function ContentModule() {
 
   if (loading) return <div style={uiStyles.loadingCenter}><Spinner /></div>;
 
+  const visibleChunks = chunks.filter((chunk) => {
+    if (!chunkSearch.trim()) return true;
+    const query = chunkSearch.trim().toLowerCase();
+    return [
+      String(chunk.source_name ?? ''),
+      String(chunk.preview ?? ''),
+      String(chunk.content_type ?? ''),
+    ].some((value) => value.toLowerCase().includes(query));
+  });
+
   return (
     <div>
       <PageHeader
@@ -330,6 +348,67 @@ function ContentModule() {
           </div>
         ))}
       </Card>
+
+      {isFaculty && (
+        <Card style={{ marginTop: '16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <div>
+              <h3 style={{ margin: 0, color: 'var(--text-primary)' }}>Generated Chunks</h3>
+              <p style={{ margin: '6px 0 0', color: 'var(--text-muted)', fontSize: '13px' }}>
+                Inspect the indexed chunks used for course retrieval.
+              </p>
+            </div>
+            <div style={{ minWidth: '260px', flex: '1 1 320px', maxWidth: '520px' }}>
+              <Input
+                value={chunkSearch}
+                onChange={(e) => setChunkSearch(e.target.value)}
+                placeholder="Search chunks by source or content..."
+              />
+            </div>
+          </div>
+          <div style={{ marginTop: '12px', marginBottom: '12px', color: 'var(--text-secondary)', fontSize: '13px' }}>
+            Showing {visibleChunks.length} of {chunks.length} chunk{chunks.length === 1 ? '' : 's'}
+          </div>
+          {visibleChunks.length === 0 && (
+            <p style={{ color: 'var(--text-muted)' }}>
+              {chunks.length === 0 ? 'No chunks indexed for this course yet.' : 'No chunks match your search.'}
+            </p>
+          )}
+          {visibleChunks.map((chunk) => (
+            <div
+              key={String(chunk.id)}
+              style={{
+                padding: '12px 0',
+                borderTop: '1px solid var(--border-subtle)',
+                display: 'grid',
+                gap: '6px',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+                <strong style={{ color: 'var(--text-primary)' }}>{String(chunk.source_name ?? 'Unknown source')}</strong>
+                <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
+                  {String(chunk.content_type ?? 'CONTENT')} • Chunk #{String(chunk.chunk_index ?? 0)}
+                </span>
+              </div>
+              <div style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
+                {String(chunk.size_words ?? 0)} words • {String(chunk.size_chars ?? 0)} chars
+              </div>
+              <div
+                style={{
+                  background: 'var(--bg-elevated)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-md)',
+                  padding: '10px 12px',
+                  color: 'var(--text-primary)',
+                  lineHeight: 1.5,
+                }}
+              >
+                {String(chunk.preview ?? '').trim() || 'No preview available.'}
+              </div>
+            </div>
+          ))}
+        </Card>
+      )}
     </div>
   );
 }
