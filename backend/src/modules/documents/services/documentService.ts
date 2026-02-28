@@ -6,6 +6,12 @@ import { createDocumentRepository } from '../repositories/documentRepository';
 export function createDocumentService(deps: LegacyRouteDeps) {
   const { pool, ROLES, AI_SERVICE_URL, axios, fs, path, logAudit } = deps;
   const repo = createDocumentRepository(pool);
+  const aiCleanupHeaders = (req: AuthRequest, tenantId: number) => req.headers.authorization
+    ? { Authorization: req.headers.authorization as string }
+    : {
+        'X-Internal-Secret': process.env.AI_SERVICE_SECRET || 'internal-service-secret-key',
+        'X-Tenant-Id': String(tenantId),
+      };
 
   return {
     async upload(req: AuthRequest, res: Response) {
@@ -168,13 +174,43 @@ export function createDocumentService(deps: LegacyRouteDeps) {
           : 'id = $1 AND tenant_id = $2 AND user_id = $3';
         const params = isTenantAdmin ? [docId, tenantId] : [docId, tenantId, userId];
 
-        const result = await repo.query(
-          `DELETE FROM documents WHERE ${where} RETURNING id, file_path`,
+        const existing = await repo.query(
+          `SELECT id, file_path, course_id, selected_store_name
+           FROM documents
+           WHERE ${where}`,
           params,
         );
-        if (!result.rows.length) return res.status(404).json({ error: 'Document not found' });
+        if (!existing.rows.length) return res.status(404).json({ error: 'Document not found' });
 
-        const filePath = result.rows[0].file_path;
+        const row = existing.rows[0];
+
+        try {
+          await axios.post(
+            `${AI_SERVICE_URL}/ai/delete-source`,
+            {
+              tenant_id: tenantId,
+              source_kind: 'document',
+              source_id: docId,
+              course_id: row.course_id ?? null,
+              vector_store: row.selected_store_name ?? null,
+            },
+            { timeout: 30000, headers: aiCleanupHeaders(req, tenantId) },
+          );
+        } catch (cleanupErr) {
+          console.warn('[DOCUMENTS] AI cleanup warning:', (cleanupErr as any)?.message ?? cleanupErr);
+        }
+
+        await repo.query(
+          'DELETE FROM chunks WHERE tenant_id = $1 AND document_id = $2',
+          [tenantId, docId],
+        );
+
+        await repo.query(
+          `DELETE FROM documents WHERE id = $1 AND tenant_id = $2`,
+          [docId, tenantId],
+        );
+
+        const filePath = row.file_path;
         if (filePath && fs.existsSync(filePath)) fs.unlink(filePath, () => {});
 
         logAudit(userId, tenantId, 'document.delete', 'document', docId, {}, 'info', req);

@@ -585,6 +585,32 @@ function FacultyFiles() {
     load();
   };
 
+  const deleteItem = async (item: Record<string, unknown>) => {
+    const id = Number(item.id);
+    if (!Number.isFinite(id) || id <= 0) return;
+    try {
+      if (String(item.content_type) === 'VIDEO') {
+        await userApi.deleteVideo(id);
+      } else {
+        await userApi.deleteDocument(id);
+      }
+      if (chunkSource && Number(chunkSource.id) === id && String(chunkSource.content_type) === String(item.content_type)) {
+        setChunkSource(null);
+        setChunks([]);
+      }
+      if (previewItem && Number(previewItem.id) === id && String(previewItem.content_type) === String(item.content_type)) {
+        setPreviewItem(null);
+      }
+      if (selectedAttach && selectedAttach.id === id && selectedAttach.type === String(item.content_type)) {
+        setSelectedAttach(null);
+      }
+      toast.success('File deleted');
+      load();
+    } catch {
+      toast.error('Failed to delete file');
+    }
+  };
+
   const toYouTubeEmbedUrl = (url: string): string | null => {
     try {
       const input = String(url || '').trim();
@@ -744,6 +770,7 @@ function FacultyFiles() {
                       Chunks
                     </button>
                     <Button size="sm" variant="secondary" onClick={() => setSelectedAttach({ id: Number(it.id), type: String(it.content_type) })}>Attach</Button>
+                    <Button size="sm" variant="danger" onClick={() => void deleteItem(it)}>Delete</Button>
                   </td>
                 </tr>
               ))}

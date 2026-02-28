@@ -6,10 +6,10 @@ from .base_store import BaseVectorStore, SearchResult
 from typing import List, Dict, Any, Optional
 import os
 
-# Disable telemetry noise/errors from chroma in local/dev environments.
+# Disable anonymized telemetry, but do not override implementation class names.
+# Setting *_IMPL to invalid values like "none" breaks Chroma client init because
+# it expects a "module:class" path and tries to unpack it.
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "FALSE")
-os.environ.setdefault("CHROMA_TELEMETRY_IMPL", "none")
-os.environ.setdefault("CHROMA_PRODUCT_TELEMETRY_IMPL", "none")
 
 import chromadb
 from chromadb.config import Settings
@@ -58,10 +58,14 @@ class ChromaDBVectorStore(BaseVectorStore):
     @staticmethod
     def _build_client(persist_directory: Optional[str]):
         try:
-            chroma_settings = Settings(
-                anonymized_telemetry=False,
-                chroma_product_telemetry_impl="none",
-            )
+            if persist_directory:
+                chroma_settings = Settings(
+                    anonymized_telemetry=False,
+                    is_persistent=True,
+                    persist_directory=persist_directory,
+                )
+            else:
+                chroma_settings = Settings(anonymized_telemetry=False)
         except TypeError:
             chroma_settings = Settings(anonymized_telemetry=False)
 
@@ -70,7 +74,11 @@ class ChromaDBVectorStore(BaseVectorStore):
         # Preferred: explicit settings (telemetry disabled).
         try:
             if persist_directory:
-                return chromadb.PersistentClient(path=persist_directory, settings=chroma_settings)
+                try:
+                    return chromadb.PersistentClient(path=persist_directory, settings=chroma_settings)
+                except TypeError:
+                    # Older Chroma builds can be happier with the generic client + persistent settings.
+                    return chromadb.Client(chroma_settings)
             return chromadb.Client(settings=chroma_settings)
         except Exception as exc:
             errors.append(f"settings_client={exc}")
@@ -78,7 +86,10 @@ class ChromaDBVectorStore(BaseVectorStore):
         # Fallback: minimal constructor, no explicit settings.
         try:
             if persist_directory:
-                return chromadb.PersistentClient(path=persist_directory)
+                try:
+                    return chromadb.PersistentClient(path=persist_directory)
+                except TypeError:
+                    return chromadb.Client(Settings(is_persistent=True, persist_directory=persist_directory))
             return chromadb.Client()
         except Exception as exc:
             errors.append(f"minimal_client={exc}")

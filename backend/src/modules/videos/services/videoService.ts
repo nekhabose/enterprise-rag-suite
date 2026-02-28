@@ -7,6 +7,12 @@ import fs from 'fs';
 export function createVideoService(deps: LegacyRouteDeps) {
   const { ROLES, AI_SERVICE_URL, axios, logAudit } = deps;
   const repo = createVideoRepository(deps.pool);
+  const aiCleanupHeaders = (req: AuthRequest, tenantId: number) => req.headers.authorization
+    ? { Authorization: req.headers.authorization as string }
+    : {
+        'X-Internal-Secret': process.env.AI_SERVICE_SECRET || 'internal-service-secret-key',
+        'X-Tenant-Id': String(tenantId),
+      };
 
   return {
     list: async (req: AuthRequest, res: Response) => {
@@ -266,10 +272,45 @@ export function createVideoService(deps: LegacyRouteDeps) {
       try {
         const where = isTenantAdmin ? 'id = $1 AND tenant_id = $2' : 'id = $1 AND tenant_id = $2 AND user_id = $3';
         const params = isTenantAdmin ? [videoId, tenantId] : [videoId, tenantId, userId];
-        const result = await repo.query(`DELETE FROM videos WHERE ${where} RETURNING id`, params);
+        const existing = await repo.query(
+          `SELECT id, course_id, selected_store_name, file_path
+           FROM videos
+           WHERE ${where}`,
+          params,
+        );
 
-        if (!result.rows.length) {
+        if (!existing.rows.length) {
           return res.status(404).json({ error: 'Video not found' });
+        }
+
+        const row = existing.rows[0];
+
+        try {
+          await axios.post(
+            `${AI_SERVICE_URL}/ai/delete-source`,
+            {
+              tenant_id: tenantId,
+              source_kind: 'video',
+              source_id: videoId,
+              course_id: row.course_id ?? null,
+              vector_store: row.selected_store_name ?? null,
+            },
+            { timeout: 30000, headers: aiCleanupHeaders(req, tenantId) },
+          );
+        } catch (cleanupErr) {
+          console.warn('[VIDEOS] AI cleanup warning:', (cleanupErr as any)?.message ?? cleanupErr);
+        }
+
+        await repo.query(
+          'DELETE FROM chunks WHERE tenant_id = $1 AND video_id = $2',
+          [tenantId, videoId],
+        );
+        await repo.query(
+          'DELETE FROM videos WHERE id = $1 AND tenant_id = $2',
+          [videoId, tenantId],
+        );
+        if (row.file_path && fs.existsSync(row.file_path)) {
+          fs.unlink(row.file_path, () => {});
         }
 
         await logAudit(userId, tenantId, 'video.delete', 'video', videoId, {}, 'info', req);

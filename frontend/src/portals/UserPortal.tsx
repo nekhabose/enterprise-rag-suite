@@ -153,7 +153,8 @@ function ContentModule() {
   const [documents, setDocuments] = useState<Record<string, unknown>[]>([]);
   const [videos, setVideos] = useState<Record<string, unknown>[]>([]);
   const [chunks, setChunks] = useState<Record<string, unknown>[]>([]);
-  const [chunkSearch, setChunkSearch] = useState('');
+  const [chunkSource, setChunkSource] = useState<Record<string, unknown> | null>(null);
+  const [chunksLoading, setChunksLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [submittingYt, setSubmittingYt] = useState(false);
@@ -177,12 +178,8 @@ function ContentModule() {
       const vids = (videoRes.data ?? []).filter((v: Record<string, unknown>) =>
         nextCourseId ? Number(v.course_id) === Number(nextCourseId) : true,
       );
-      const chunkRows = isFaculty && nextCourseId
-        ? ((await facultyApi.getCourseChunks(Number(nextCourseId), { limit: 50 })).data?.chunks ?? [])
-        : [];
       setDocuments(docs);
       setVideos(vids);
-      setChunks(chunkRows);
     } catch {
       setCourses([]);
       setDocuments([]);
@@ -272,17 +269,28 @@ function ContentModule() {
     }
   };
 
-  if (loading) return <div style={uiStyles.loadingCenter}><Spinner /></div>;
+  const openChunks = async (item: Record<string, unknown>, contentType: 'DOCUMENT' | 'VIDEO') => {
+    if (!selectedCourseId || !isFaculty) return;
+    setChunkSource(item);
+    setChunks([]);
+    setChunksLoading(true);
+    try {
+      const response = await facultyApi.getCourseFileChunks(
+        Number(selectedCourseId),
+        contentType,
+        Number(item.id),
+        { limit: 40 },
+      );
+      setChunks(Array.isArray(response.data?.chunks) ? response.data.chunks : []);
+    } catch {
+      setChunks([]);
+      toast.error('Failed to load chunks');
+    } finally {
+      setChunksLoading(false);
+    }
+  };
 
-  const visibleChunks = chunks.filter((chunk) => {
-    if (!chunkSearch.trim()) return true;
-    const query = chunkSearch.trim().toLowerCase();
-    return [
-      String(chunk.source_name ?? ''),
-      String(chunk.preview ?? ''),
-      String(chunk.content_type ?? ''),
-    ].some((value) => value.toLowerCase().includes(query));
-  });
+  if (loading) return <div style={uiStyles.loadingCenter}><Spinner /></div>;
 
   return (
     <div>
@@ -327,11 +335,28 @@ function ContentModule() {
         <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>Documents</h3>
         {documents.length === 0 && <p style={{ color: 'var(--text-muted)' }}>No documents for this course.</p>}
         {documents.map((doc) => (
-          <div key={String(doc.id)} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--border-subtle)' }}>
-            <span style={{ color: 'var(--text-primary)' }}>{String(doc.filename ?? 'Untitled')}</span>
-            {canUpload && hasPermission('DOCUMENT_DELETE') && (
-              <Button size="sm" variant="danger" onClick={() => deleteDocument(Number(doc.id))}>Delete</Button>
-            )}
+          <div key={String(doc.id)} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', padding: '10px 0', borderBottom: '1px solid var(--border-subtle)', alignItems: 'center' }}>
+            <div>
+              <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{String(doc.filename ?? 'Untitled')}</div>
+              {Number(doc.chunk_count ?? 0) > 0 && (
+                <div style={{ marginTop: 4, color: 'var(--text-muted)', fontSize: 12 }}>
+                  {Number(doc.chunk_count)} chunks
+                </div>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+              {isFaculty && (
+                <button
+                  onClick={() => void openChunks(doc, 'DOCUMENT')}
+                  style={{ border: 'none', background: 'transparent', color: 'var(--brand-700)', cursor: 'pointer', padding: 0 }}
+                >
+                  Chunks
+                </button>
+              )}
+              {canUpload && hasPermission('DOCUMENT_DELETE') && (
+                <Button size="sm" variant="danger" onClick={() => deleteDocument(Number(doc.id))}>Delete</Button>
+              )}
+            </div>
           </div>
         ))}
       </Card>
@@ -340,74 +365,79 @@ function ContentModule() {
         <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>Lecture Videos</h3>
         {videos.length === 0 && <p style={{ color: 'var(--text-muted)' }}>No videos for this course.</p>}
         {videos.map((video) => (
-          <div key={String(video.id)} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--border-subtle)' }}>
-            <span style={{ color: 'var(--text-primary)' }}>{String(video.title ?? video.youtube_url ?? 'Video')}</span>
-            {canUpload && hasPermission('VIDEO_DELETE') && (
-              <Button size="sm" variant="danger" onClick={() => deleteVideo(Number(video.id))}>Delete</Button>
-            )}
+          <div key={String(video.id)} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', padding: '10px 0', borderBottom: '1px solid var(--border-subtle)', alignItems: 'center' }}>
+            <div>
+              <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{String(video.title ?? video.youtube_url ?? 'Video')}</div>
+              {Number(video.chunk_count ?? 0) > 0 && (
+                <div style={{ marginTop: 4, color: 'var(--text-muted)', fontSize: 12 }}>
+                  {Number(video.chunk_count)} chunks
+                </div>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+              {isFaculty && (
+                <button
+                  onClick={() => void openChunks(video, 'VIDEO')}
+                  style={{ border: 'none', background: 'transparent', color: 'var(--brand-700)', cursor: 'pointer', padding: 0 }}
+                >
+                  Chunks
+                </button>
+              )}
+              {canUpload && hasPermission('VIDEO_DELETE') && (
+                <Button size="sm" variant="danger" onClick={() => deleteVideo(Number(video.id))}>Delete</Button>
+              )}
+            </div>
           </div>
         ))}
       </Card>
 
-      {isFaculty && (
-        <Card style={{ marginTop: '16px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
-            <div>
-              <h3 style={{ margin: 0, color: 'var(--text-primary)' }}>Generated Chunks</h3>
-              <p style={{ margin: '6px 0 0', color: 'var(--text-muted)', fontSize: '13px' }}>
-                Inspect the indexed chunks used for course retrieval.
-              </p>
-            </div>
-            <div style={{ minWidth: '260px', flex: '1 1 320px', maxWidth: '520px' }}>
-              <Input
-                value={chunkSearch}
-                onChange={(e) => setChunkSearch(e.target.value)}
-                placeholder="Search chunks by source or content..."
-              />
-            </div>
+      {chunkSource && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.45)',
+            display: 'grid',
+            placeItems: 'center',
+            zIndex: 60,
+            padding: 16,
+          }}
+          onClick={() => setChunkSource(null)}
+        >
+          <div onClick={(e) => e.stopPropagation()}>
+            <Card style={{ width: 'min(960px, 95vw)', maxHeight: '85vh', overflow: 'auto' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <h4 style={{ margin: 0, color: 'var(--text-primary)' }}>
+                  Chunks: {String(chunkSource.filename ?? chunkSource.title ?? 'Source')}
+                </h4>
+                <Button size="sm" variant="secondary" onClick={() => setChunkSource(null)}>Close</Button>
+              </div>
+              {chunksLoading ? (
+                <div style={uiStyles.loadingCenter}><Spinner /></div>
+              ) : chunks.length === 0 ? (
+                <p style={{ margin: 0, color: 'var(--text-muted)' }}>No chunks indexed for this item yet.</p>
+              ) : (
+                <div style={{ display: 'grid', gap: 10 }}>
+                  {chunks.map((chunk, idx) => (
+                    <div key={String(chunk.id ?? idx)} style={{ border: '1px solid var(--border-subtle)', borderRadius: 10, padding: 12, background: 'var(--bg-elevated)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap', marginBottom: 6 }}>
+                        <strong style={{ color: 'var(--text-primary)' }}>
+                          Chunk #{String(chunk.chunk_index ?? idx)}
+                        </strong>
+                        <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                          {String(chunk.size_words ?? 0)} words • {String(chunk.size_chars ?? 0)} chars
+                        </span>
+                      </div>
+                      <div style={{ color: 'var(--text-primary)', lineHeight: 1.5 }}>
+                        {String(chunk.preview ?? '').trim() || 'No preview available.'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
           </div>
-          <div style={{ marginTop: '12px', marginBottom: '12px', color: 'var(--text-secondary)', fontSize: '13px' }}>
-            Showing {visibleChunks.length} of {chunks.length} chunk{chunks.length === 1 ? '' : 's'}
-          </div>
-          {visibleChunks.length === 0 && (
-            <p style={{ color: 'var(--text-muted)' }}>
-              {chunks.length === 0 ? 'No chunks indexed for this course yet.' : 'No chunks match your search.'}
-            </p>
-          )}
-          {visibleChunks.map((chunk) => (
-            <div
-              key={String(chunk.id)}
-              style={{
-                padding: '12px 0',
-                borderTop: '1px solid var(--border-subtle)',
-                display: 'grid',
-                gap: '6px',
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
-                <strong style={{ color: 'var(--text-primary)' }}>{String(chunk.source_name ?? 'Unknown source')}</strong>
-                <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
-                  {String(chunk.content_type ?? 'CONTENT')} • Chunk #{String(chunk.chunk_index ?? 0)}
-                </span>
-              </div>
-              <div style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
-                {String(chunk.size_words ?? 0)} words • {String(chunk.size_chars ?? 0)} chars
-              </div>
-              <div
-                style={{
-                  background: 'var(--bg-elevated)',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: 'var(--radius-md)',
-                  padding: '10px 12px',
-                  color: 'var(--text-primary)',
-                  lineHeight: 1.5,
-                }}
-              >
-                {String(chunk.preview ?? '').trim() || 'No preview available.'}
-              </div>
-            </div>
-          ))}
-        </Card>
+        </div>
       )}
     </div>
   );

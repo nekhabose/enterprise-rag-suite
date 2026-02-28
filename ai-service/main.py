@@ -29,10 +29,11 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Chroma telemetry can throw noisy runtime errors in some env/package combinations.
-# Force-disable before any Chroma client initialization.
+# Disable anonymized telemetry, but do not force invalid implementation values.
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "FALSE")
-os.environ.setdefault("CHROMA_TELEMETRY_IMPL", "none")
-os.environ.setdefault("CHROMA_PRODUCT_TELEMETRY_IMPL", "none")
+for _telemetry_impl_var in ("CHROMA_TELEMETRY_IMPL", "CHROMA_PRODUCT_TELEMETRY_IMPL"):
+    if str(os.getenv(_telemetry_impl_var, "")).strip().lower() == "none":
+        os.environ.pop(_telemetry_impl_var, None)
 
 load_dotenv()
 
@@ -117,6 +118,14 @@ class IndexDocumentRequest(BaseModel):
     model: Optional[str] = None
     embedding_model: Optional[str] = None
     chunking_strategy: Optional[str] = None
+
+
+class DeleteSourceRequest(BaseModel):
+    tenant_id: int
+    source_kind: str = Field(..., pattern="^(document|video)$")
+    source_id: int
+    course_id: Optional[int] = None
+    vector_store: Optional[str] = None
 
 class IndexVideoUploadRequest(BaseModel):
     video_id: int
@@ -211,6 +220,27 @@ def _coerce_pgvector_dim(vec: List[float], dim: int = 1536) -> List[float]:
     if len(vec) > dim:
         return vec[:dim]
     return vec + [0.0] * (dim - len(vec))
+
+
+def _normalize_text_for_chunking(text: str, strategy: str) -> str:
+    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    # Preserve line boundaries for structure-aware chunkers.
+    if strategy in ("semantic", "paragraph", "page_based", "sentence", "parent_child", "recursive"):
+        lines = [re.sub(r"[ \t\f\v]+", " ", line).strip() for line in raw.split("\n")]
+        collapsed: List[str] = []
+        blank_run = 0
+        for line in lines:
+            if not line:
+                blank_run += 1
+                if blank_run <= 2:
+                    collapsed.append("")
+                continue
+            blank_run = 0
+            collapsed.append(line)
+        content = "\n".join(collapsed).strip()
+        return re.sub(r"\n{3,}", "\n\n", content)
+    # Dense fixed-size style chunkers can work on a flattened text stream.
+    return re.sub(r"\s+", " ", raw).strip()
 
 
 def _extract_video_id(url: str) -> Optional[str]:
@@ -347,6 +377,58 @@ def _index_into_selected_store(
         return f"Selected vector store '{store_name}' indexing warning: {exc}"
 
 
+def _delete_from_selected_store(
+    vector_store: Optional[str],
+    tenant_id: int,
+    course_id: Optional[int],
+    source_kind: str,
+    source_id: int,
+    chunk_indexes: List[int],
+) -> Optional[str]:
+    store_name = str(_first_scalar(vector_store) or "postgres").strip().lower()
+    if store_name in ("", "postgres", "pgvector") or not chunk_indexes:
+        return None
+    try:
+        from vector_stores.vector_store_factory import VectorStoreFactory
+        kwargs = {}
+        namespace_suffix = f"tenant_{tenant_id}_course_{course_id or 0}"
+        if store_name in ("chroma", "chromadb"):
+            kwargs["collection_name"] = namespace_suffix
+            kwargs["persist_directory"] = os.path.join("data", "chroma")
+        elif store_name.startswith("faiss"):
+            os.makedirs(os.path.join("data", "faiss"), exist_ok=True)
+            kwargs["storage_path"] = os.path.join("data", "faiss", namespace_suffix)
+        elif store_name.startswith("qdrant"):
+            kwargs["collection_name"] = namespace_suffix
+            kwargs["use_memory"] = str(os.getenv("QDRANT_USE_MEMORY", "true")).strip().lower() in ("1", "true", "yes")
+            kwargs["host"] = os.getenv("QDRANT_HOST", "localhost")
+            kwargs["port"] = int(os.getenv("QDRANT_PORT", "6333"))
+        elif store_name == "pinecone":
+            kwargs["namespace"] = namespace_suffix
+            kwargs["api_key"] = os.getenv("PINECONE_API_KEY")
+            kwargs["index_name"] = os.getenv("PINECONE_INDEX", "enterprise-rag")
+            kwargs["cloud"] = os.getenv("PINECONE_CLOUD", "aws")
+            kwargs["region"] = os.getenv("PINECONE_REGION", "us-east-1")
+        store = VectorStoreFactory.create(
+            strategy=store_name,
+            dimension=384,
+            db_connection_string=os.getenv("DATABASE_URL", ""),
+            **kwargs,
+        )
+        ids = [f"{source_kind}:{source_id}:{idx}" for idx in chunk_indexes]
+        ok = store.delete(ids=ids) if hasattr(store, "delete") else True
+        if hasattr(store, "save"):
+            try:
+                store.save()
+            except Exception:
+                pass
+        if ok is False:
+            return f"Failed to delete vectors from selected store '{store_name}'"
+        return None
+    except Exception as exc:
+        return f"Selected vector store '{store_name}' delete warning: {exc}"
+
+
 def _chunk_embed_store(
     *,
     tenant_id: int,
@@ -359,11 +441,11 @@ def _chunk_embed_store(
     override_chunking: Optional[str] = None,
     override_embedding_model: Optional[str] = None,
 ) -> dict:
-    content = re.sub(r"\s+", " ", text or "").strip()
-    if not content:
-        return {"chunks_created": 0, "warnings": ["No extractable content found"], "chunking_strategy": None, "vector_store": cfg.get("vector_store")}
-
     chunking_strategy = _normalize_chunking(override_chunking or cfg.get("chunking_strategy"))
+    content = _normalize_text_for_chunking(text or "", chunking_strategy)
+    if not content:
+        return {"chunks_created": 0, "warnings": ["No extractable content found"], "chunking_strategy": chunking_strategy, "vector_store": cfg.get("vector_store")}
+
     chunk_profile = _chunking_profile(chunking_strategy)
     chunker = FactoryChunker(chunking_strategy)
     chunks = [c.strip() for c in chunker.chunk(content) if c and str(c).strip()]
@@ -635,6 +717,77 @@ async def list_chunks(
         "course_id": source_row.get("course_id"),
         "chunk_count_returned": len(chunks),
         "chunks": chunks,
+    }
+
+
+@app.post("/ai/delete-source")
+@limiter.limit("30/minute")
+async def delete_source(
+    request: Request,
+    body: DeleteSourceRequest,
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    if body.source_kind not in ("document", "video"):
+        raise HTTPException(status_code=422, detail="source_kind must be document or video")
+    if not tenant_scoped(user, body.tenant_id):
+        raise HTTPException(status_code=403, detail="Tenant access denied")
+    required_perm = "DOCUMENT_WRITE" if body.source_kind == "document" else "VIDEO_WRITE"
+    if not user.has_permission(required_perm):
+        raise HTTPException(status_code=403, detail=f"Insufficient permissions: {required_perm} required")
+
+    with _get_db_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if body.source_kind == "document":
+                cur.execute(
+                    """
+                    SELECT chunk_index
+                    FROM chunks
+                    WHERE tenant_id = %s AND document_id = %s
+                    ORDER BY chunk_index ASC
+                    """,
+                    [body.tenant_id, body.source_id],
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT chunk_index
+                    FROM chunks
+                    WHERE tenant_id = %s AND video_id = %s
+                    ORDER BY chunk_index ASC
+                    """,
+                    [body.tenant_id, body.source_id],
+                )
+            rows = list(cur.fetchall())
+            chunk_indexes = [int(row.get("chunk_index") or 0) for row in rows]
+
+            selected_store_warning = _delete_from_selected_store(
+                body.vector_store,
+                body.tenant_id,
+                body.course_id,
+                body.source_kind,
+                body.source_id,
+                chunk_indexes,
+            )
+
+            if body.source_kind == "document":
+                cur.execute(
+                    "DELETE FROM chunks WHERE tenant_id = %s AND document_id = %s",
+                    [body.tenant_id, body.source_id],
+                )
+            else:
+                cur.execute(
+                    "DELETE FROM chunks WHERE tenant_id = %s AND video_id = %s",
+                    [body.tenant_id, body.source_id],
+                )
+            conn.commit()
+
+    return {
+        "success": True,
+        "source_kind": body.source_kind,
+        "source_id": body.source_id,
+        "deleted_chunks": len(chunk_indexes),
+        "selected_store_deleted": selected_store_warning is None,
+        "selected_store_warning": selected_store_warning,
     }
 
 
