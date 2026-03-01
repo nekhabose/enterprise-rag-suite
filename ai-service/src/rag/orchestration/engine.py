@@ -127,6 +127,22 @@ class RAGEngine:
                 "grounded": False,
             }
 
+        if len(grounded) < requested_top_k:
+            seen_pairs = {
+                (str(d.get("source", "unknown")), str(d.get("snippet", "")))
+                for d in grounded
+            }
+            for candidate in ranked:
+                if not candidate.get("snippet"):
+                    continue
+                pair = (str(candidate.get("source", "unknown")), str(candidate.get("snippet", "")))
+                if pair in seen_pairs:
+                    continue
+                grounded.append(candidate)
+                seen_pairs.add(pair)
+                if len(grounded) >= requested_top_k:
+                    break
+
         ranked = grounded
         context = "\n".join([d.get("snippet", "") for d in ranked[:requested_top_k]])
         provider = str(cfg.get("llm_provider") or settings.llm_provider)

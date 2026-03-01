@@ -95,7 +95,7 @@ export default function SidebarLayout({
             style={styles.logoutBtn}
             title="Sign out"
           >
-            ↪
+            {loggingOut ? '...' : 'Logout'}
           </button>
         </div>
       </aside>
@@ -225,14 +225,17 @@ const styles: Record<string, React.CSSProperties> = {
     whiteSpace: 'nowrap' as const,
   },
   logoutBtn: {
-    background: 'none',
-    border: 'none',
-    color: 'var(--sidebar-text-dim)',
+    background: 'var(--status-danger-soft)',
+    border: '1px solid color-mix(in srgb, var(--status-danger) 26%, transparent)',
+    color: 'var(--status-danger)',
     cursor: 'pointer',
-    fontSize: '16px',
-    padding: '4px',
+    fontSize: '11px',
+    fontWeight: 700,
+    padding: '6px 10px',
+    borderRadius: '999px',
+    lineHeight: 1,
     flexShrink: 0,
-    transition: 'color 0.15s',
+    transition: 'opacity 0.15s ease-out, transform 0.15s ease-out',
   },
   main: {
     flex: 1,

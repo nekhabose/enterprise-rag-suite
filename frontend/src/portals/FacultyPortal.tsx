@@ -101,7 +101,7 @@ function TopBar() {
               <Button size="sm" variant="secondary" onClick={() => { setOpen(false); navigate('/faculty/help'); }}>Settings</Button>
               <Button
                 size="sm"
-                variant="ghost"
+                variant="danger"
                 onClick={async () => {
                   setOpen(false);
                   await logout();
