@@ -1021,7 +1021,8 @@ function FacultyQuizzes() {
   });
   const targetQuestionCount = Math.max(1, Number(manual.quiz_length) || 1);
   const canCreateDraft = Boolean(manual.title.trim() && manual.due_at);
-  const manualQuestionProgress = `${questions.length} / ${targetQuestionCount}`;
+  const validQuestionCount = questions.filter((q) => String(q.question_text ?? '').trim().length > 0).length;
+  const manualQuestionProgress = `${validQuestionCount} / ${targetQuestionCount}`;
 
   const filteredQuizzes = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -1405,10 +1406,13 @@ function FacultyQuizzes() {
                 Manual Draft Progress
               </div>
               <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-                Add exactly the required number of questions before saving or publishing.
+                Add exactly the required number of questions and fill in each prompt before saving or publishing.
               </div>
             </div>
-            <Badge>{manualQuestionProgress} questions</Badge>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <Badge>{questions.length} cards</Badge>
+              <Badge>{manualQuestionProgress} completed</Badge>
+            </div>
           </div>
           <div>
             <div style={{ color: 'var(--text-secondary)', fontSize: 12, marginBottom: 6 }}>RAG Source Files</div>
