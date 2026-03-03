@@ -976,15 +976,6 @@ function FacultyChunks() {
   );
 }
 
-type QuizDraftQuestion = {
-  question_text: string;
-  question_type: string;
-  correct_answer: string;
-  correct_answers?: string[];
-  options: string[];
-  points: number;
-};
-
 type EditableQuizQuestion = {
   id: number;
   question_text: string;
@@ -1002,7 +993,6 @@ function FacultyQuizzes() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'draft' | 'published' | 'needs_review'>('all');
   const [sortBy, setSortBy] = useState<'updated' | 'created' | 'title'>('updated');
   const [manual, setManual] = useState({ title: '', difficulty: 'medium', due_at: '', time_limit_minutes: '30', attempts_allowed: '1', quiz_length: '4' });
-  const [questions, setQuestions] = useState<QuizDraftQuestion[]>([{ question_text: '', question_type: 'mcq', correct_answer: '', correct_answers: [], options: ['', '', '', ''], points: 1 }]);
   const [generating, setGenerating] = useState(false);
   const [docs, setDocs] = useState<Record<string, unknown>[]>([]);
   const [docIds, setDocIds] = useState<number[]>([]);
@@ -1021,8 +1011,6 @@ function FacultyQuizzes() {
   });
   const targetQuestionCount = Math.max(1, Number(manual.quiz_length) || 1);
   const canCreateDraft = Boolean(manual.title.trim() && manual.due_at);
-  const validQuestionCount = questions.filter((q) => String(q.question_text ?? '').trim().length > 0).length;
-  const manualQuestionProgress = `${validQuestionCount} / ${targetQuestionCount}`;
 
   const filteredQuizzes = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -1057,60 +1045,6 @@ function FacultyQuizzes() {
   };
 
   useEffect(() => { load(); }, [courseId, search]);
-
-  const addQuestion = () => {
-    if (questions.length >= targetQuestionCount) {
-      toast.error(`Quiz length is ${targetQuestionCount}. Increase the required number of questions to add more.`);
-      return;
-    }
-    setQuestions((prev) => [...prev, { question_text: '', question_type: 'mcq', correct_answer: '', correct_answers: [], options: ['', '', '', ''], points: 1 }]);
-  };
-
-  const removeQuestion = (index: number) => {
-    setQuestions((prev) => prev.filter((_, i) => i !== index));
-  };
-
-  const createManual = async () => {
-    if (!courseId) return;
-    if (!manual.title.trim()) {
-      toast.error('Quiz name is required.');
-      return;
-    }
-    if (!manual.due_at) {
-      toast.error('Last day to submit is required.');
-      return;
-    }
-    const quizLength = targetQuestionCount;
-    const normalizedQuestions = questions.map((q) => {
-      const cleanedOptions = (q.options ?? []).map((o) => String(o).trim()).filter(Boolean);
-      if (q.question_type === 'true_false') {
-        const answer = q.correct_answer === 'false' ? 'false' : 'true';
-        return { ...q, options: ['true', 'false'], correct_answer: answer };
-      }
-      if (q.question_type === 'multiple_select') {
-        const correct = (q.correct_answers ?? []).filter(Boolean);
-        return { ...q, options: cleanedOptions, correct_answer: JSON.stringify(correct) };
-      }
-      return { ...q, options: cleanedOptions, correct_answer: q.correct_answer };
-    }).filter((q) => String(q.question_text ?? '').trim().length > 0);
-    if (normalizedQuestions.length !== quizLength) {
-      toast.error(`Manual quiz requires exactly ${quizLength} questions. Current: ${normalizedQuestions.length}.`);
-      return;
-    }
-    await facultyApi.createManualQuiz(Number(courseId), {
-      ...manual,
-      attempts_allowed: Number(manual.attempts_allowed),
-      time_limit_minutes: Number(manual.time_limit_minutes),
-      quiz_length: quizLength,
-      due_at: manual.due_at || null,
-      questions: normalizedQuestions,
-      is_published: false,
-    });
-    toast.success('Manual quiz draft created');
-    setManual({ title: '', difficulty: 'medium', due_at: '', time_limit_minutes: '30', attempts_allowed: '1', quiz_length: String(quizLength) });
-    setQuestions([{ question_text: '', question_type: 'mcq', correct_answer: '', correct_answers: [], options: ['', '', '', ''], points: 1 }]);
-    load();
-  };
 
   const generateQuiz = async () => {
     if (!courseId) return;
@@ -1350,13 +1284,7 @@ function FacultyQuizzes() {
                 value={manual.quiz_length}
                 onChange={(e) => {
                   const rawValue = Math.max(1, Math.min(20, Number(e.target.value) || 1));
-                  const nextValue = String(rawValue);
-                  setManual((p) => ({ ...p, quiz_length: nextValue }));
-                  setQuestions((prev) => {
-                    if (prev.length <= rawValue) return prev;
-                    toast(`Question count trimmed to ${rawValue} to match the new quiz length.`);
-                    return prev.slice(0, rawValue);
-                  });
+                  setManual((p) => ({ ...p, quiz_length: String(rawValue) }));
                 }}
                 placeholder="4"
               />
@@ -1392,27 +1320,14 @@ function FacultyQuizzes() {
             </div>
           </div>
           <div style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            gap: 8,
             padding: '10px 12px',
             border: '1px solid var(--border-subtle)',
             borderRadius: 10,
             background: 'var(--bg-surface)',
+            color: 'var(--text-secondary)',
+            fontSize: 13,
           }}>
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                Manual Draft Progress
-              </div>
-              <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-                Add exactly the required number of questions and fill in each prompt before saving or publishing.
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              <Badge>{questions.length} cards</Badge>
-              <Badge>{manualQuestionProgress} completed</Badge>
-            </div>
+            Quiz generation creates a reviewable draft from the current course uploads. After a draft is generated, you can open it below to edit, delete, and manually add questions before publishing.
           </div>
           <div>
             <div style={{ color: 'var(--text-secondary)', fontSize: 12, marginBottom: 6 }}>RAG Source Files</div>
@@ -1442,154 +1357,6 @@ function FacultyQuizzes() {
         </div>
       </Card>
       <Card style={{ marginTop: 12 }}>
-        <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>Manual Questions</h3>
-        <div style={{ display: 'grid', gap: 10 }}>
-          {questions.map((q, idx) => (
-            <Card key={idx} style={{ background: 'var(--surface-subtle)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
-                <strong style={{ color: 'var(--text-primary)' }}>Question {idx + 1}</strong>
-                <Button size="sm" variant="ghost" onClick={() => removeQuestion(idx)} disabled={questions.length <= 1}>Remove</Button>
-              </div>
-              <Field label="Prompt">
-                <Textarea value={q.question_text} onChange={(e) => setQuestions((prev) => prev.map((it, i) => i === idx ? { ...it, question_text: e.target.value } : it))} />
-              </Field>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-                <Field label="Type">
-                  <Select
-                    value={q.question_type}
-                    onChange={(e) => setQuestions((prev) => prev.map((it, i) => {
-                      if (i !== idx) return it;
-                      const nextType = e.target.value;
-                      if (nextType === 'true_false') {
-                        return { ...it, question_type: nextType, options: ['true', 'false'], correct_answer: 'true', correct_answers: [] };
-                      }
-                      return { ...it, question_type: nextType, options: it.options?.length ? it.options : ['', '', '', ''], correct_answers: [] };
-                    }))}
-                  >
-                    <option value="mcq">MCQ</option>
-                    <option value="multiple_select">Multiple Select</option>
-                    <option value="true_false">True / False</option>
-                    <option value="short_answer">Short Answer</option>
-                    <option value="long_answer">Long Answer</option>
-                  </Select>
-                </Field>
-                <Field label="Points">
-                  <Input type="number" value={String(q.points)} onChange={(e) => setQuestions((prev) => prev.map((it, i) => i === idx ? { ...it, points: Number(e.target.value) || 1 } : it))} />
-                </Field>
-                <Field label="Type Hint">
-                  <Input value={q.question_type} readOnly />
-                </Field>
-              </div>
-
-              {(q.question_type === 'mcq' || q.question_type === 'multiple_select') && (
-                <Field label="Options Matrix">
-                  <div style={{ display: 'grid', gap: 8 }}>
-                    {q.options.map((option, optIdx) => {
-                      const isMulti = q.question_type === 'multiple_select';
-                      const multiSelected = (q.correct_answers ?? []).includes(option);
-                      return (
-                        <div key={optIdx} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 8, alignItems: 'center' }}>
-                          {isMulti ? (
-                            <input
-                              type="checkbox"
-                              checked={multiSelected}
-                              onChange={(e) => {
-                                const checked = e.target.checked;
-                                setQuestions((prev) => prev.map((it, i) => {
-                                  if (i !== idx) return it;
-                                  const optionVal = it.options[optIdx] ?? '';
-                                  const current = new Set(it.correct_answers ?? []);
-                                  if (checked) current.add(optionVal);
-                                  else current.delete(optionVal);
-                                  return { ...it, correct_answers: Array.from(current) };
-                                }));
-                              }}
-                            />
-                          ) : (
-                            <input
-                              type="radio"
-                              name={`q-${idx}-correct`}
-                              checked={q.correct_answer === option}
-                              onChange={() => setQuestions((prev) => prev.map((it, i) => i === idx ? { ...it, correct_answer: it.options[optIdx] ?? '' } : it))}
-                            />
-                          )}
-                          <Input
-                            value={option}
-                            onChange={(e) => setQuestions((prev) => prev.map((it, i) => {
-                              if (i !== idx) return it;
-                              const updated = [...it.options];
-                              const oldValue = updated[optIdx];
-                              updated[optIdx] = e.target.value;
-                              const next = { ...it, options: updated };
-                              if (!isMulti && it.correct_answer === oldValue) next.correct_answer = e.target.value;
-                              if (isMulti) {
-                                const set = new Set(it.correct_answers ?? []);
-                                if (set.has(oldValue)) {
-                                  set.delete(oldValue);
-                                  set.add(e.target.value);
-                                }
-                                next.correct_answers = Array.from(set);
-                              }
-                              return next;
-                            }))}
-                          />
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => setQuestions((prev) => prev.map((it, i) => {
-                              if (i !== idx || it.options.length <= 2) return it;
-                              const updated = it.options.filter((_, oi) => oi !== optIdx);
-                              const removed = it.options[optIdx];
-                              const next = { ...it, options: updated };
-                              if (it.question_type === 'mcq' && it.correct_answer === removed) next.correct_answer = '';
-                              if (it.question_type === 'multiple_select') {
-                                next.correct_answers = (it.correct_answers ?? []).filter((ans) => ans !== removed);
-                              }
-                              return next;
-                            }))}
-                          >
-                            Remove
-                          </Button>
-                        </div>
-                      );
-                    })}
-                    <div>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => setQuestions((prev) => prev.map((it, i) => i === idx ? { ...it, options: [...it.options, ''] } : it))}
-                      >
-                        Add Option
-                      </Button>
-                    </div>
-                  </div>
-                </Field>
-              )}
-
-              {q.question_type === 'true_false' && (
-                <Field label="Correct Answer">
-                  <Select value={q.correct_answer || 'true'} onChange={(e) => setQuestions((prev) => prev.map((it, i) => i === idx ? { ...it, correct_answer: e.target.value } : it))}>
-                    <option value="true">True</option>
-                    <option value="false">False</option>
-                  </Select>
-                </Field>
-              )}
-
-              {(q.question_type === 'short_answer' || q.question_type === 'long_answer') && (
-                <Field label="Expected Answer (optional)">
-                  <Input value={q.correct_answer} onChange={(e) => setQuestions((prev) => prev.map((it, i) => i === idx ? { ...it, correct_answer: e.target.value } : it))} />
-                </Field>
-              )}
-            </Card>
-          ))}
-          <div style={{ display: 'flex', gap: 8 }}>
-            <Button variant="secondary" onClick={addQuestion}>Add Question</Button>
-            <Button onClick={createManual} disabled={!canCreateDraft}>Save Manual Draft</Button>
-            <Button variant="secondary" loading={generating} onClick={generateQuiz} disabled={!canCreateDraft}>Generate Quiz (RAG)</Button>
-          </div>
-        </div>
-      </Card>
-      <Card style={{ marginTop: 12 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 220px 220px', gap: 8, marginBottom: 8 }}>
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by quiz title..." />
           <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as 'all' | 'draft' | 'published' | 'needs_review')}>
@@ -1609,7 +1376,6 @@ function FacultyQuizzes() {
             <p style={{ margin: '0 0 8px', color: 'var(--text-muted)' }}>No quizzes yet for this course.</p>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
               <Button size="sm" variant="secondary" onClick={generateQuiz}>Generate Quiz from Course Uploads</Button>
-              <Button size="sm" onClick={createManual}>Create Manual Quiz</Button>
             </div>
           </div>
         ) : filteredQuizzes.map((q) => (
