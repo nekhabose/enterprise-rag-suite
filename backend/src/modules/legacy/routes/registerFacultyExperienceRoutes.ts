@@ -861,6 +861,52 @@ export function registerFacultyExperienceRoutes(deps: LegacyRouteDeps) {
     }
   });
 
+  app.delete('/faculty/courses/:courseId/quizzes/:assessmentId/questions/:questionId', authMiddleware, requirePermission('ASSESSMENT_WRITE'), async (req: AuthRequest, res: Response) => {
+    if (!ensureFaculty(req, res)) return;
+    const courseId = Number(req.params.courseId);
+    const assessmentId = Number(req.params.assessmentId);
+    const questionId = Number(req.params.questionId);
+    if (!Number.isFinite(courseId) || courseId <= 0 || !Number.isFinite(assessmentId) || assessmentId <= 0 || !Number.isFinite(questionId) || questionId <= 0) {
+      return res.status(400).json({ error: 'Invalid course, assessment, or question ID' });
+    }
+    try {
+      if (!(await ensureAssignedCourse(req, res, courseId))) return;
+      const existing = await pool.query(
+        `SELECT q.id
+         FROM questions q
+         JOIN assessment_settings s ON s.assessment_id = q.assessment_id
+         WHERE q.id = $1 AND q.assessment_id = $2 AND s.course_id = $3`,
+        [questionId, assessmentId, courseId],
+      );
+      if (!existing.rows.length) return res.status(404).json({ error: 'Question not found' });
+
+      await pool.query('DELETE FROM questions WHERE id = $1', [questionId]);
+
+      const reviewState = await pool.query(
+        `SELECT CASE
+            WHEN EXISTS (
+              SELECT 1
+              FROM questions q
+              WHERE q.assessment_id = $1
+                AND jsonb_array_length(COALESCE(q.options -> 'citations', '[]'::jsonb)) = 0
+            ) THEN true
+            ELSE false
+          END AS needs_review`,
+        [assessmentId],
+      );
+      await pool.query(
+        `UPDATE assessment_settings
+         SET needs_review = $1, updated_at = NOW()
+         WHERE assessment_id = $2 AND course_id = $3`,
+        [Boolean(reviewState.rows[0]?.needs_review), assessmentId, courseId],
+      );
+
+      return res.json({ success: true });
+    } catch {
+      return res.status(500).json({ error: 'Failed to delete question' });
+    }
+  });
+
   app.post('/faculty/courses/:courseId/quizzes/:assessmentId/questions', authMiddleware, requirePermission('ASSESSMENT_WRITE'), async (req: AuthRequest, res: Response) => {
     if (!ensureFaculty(req, res)) return;
     const courseId = Number(req.params.courseId);
@@ -997,6 +1043,7 @@ export function registerFacultyExperienceRoutes(deps: LegacyRouteDeps) {
     if (!ensureFaculty(req, res)) return;
     const courseId = Number(req.params.courseId);
     const title = String(req.body?.title ?? 'Generated Quiz').trim();
+    if (!title) return res.status(400).json({ error: 'title required' });
     const desiredCount = clampQuizLength(req.body?.quiz_length ?? req.body?.question_count ?? 5);
     const requestedTypes = Array.isArray(req.body?.question_types) && req.body.question_types.length
       ? req.body.question_types.map((t: unknown) => normalizeQuestionType(t))

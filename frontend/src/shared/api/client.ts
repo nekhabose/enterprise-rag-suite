@@ -237,6 +237,8 @@ export const facultyApi = {
     api.put(`/faculty/courses/${courseId}/quizzes/${assessmentId}/questions/${questionId}`, data),
   addQuizQuestion: (courseId: number, assessmentId: number, data: Record<string, unknown>) =>
     api.post(`/faculty/courses/${courseId}/quizzes/${assessmentId}/questions`, data),
+  deleteQuizQuestion: (courseId: number, assessmentId: number, questionId: number) =>
+    api.delete(`/faculty/courses/${courseId}/quizzes/${assessmentId}/questions/${questionId}`),
   publishQuiz: (courseId: number, assessmentId: number, data: Record<string, unknown>) =>
     api.put(`/faculty/courses/${courseId}/quizzes/${assessmentId}/publish`, data),
   duplicateQuiz: (courseId: number, assessmentId: number) =>

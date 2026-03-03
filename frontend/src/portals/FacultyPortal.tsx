@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Navigate, NavLink, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { Button, Card, Field, Input, PageHeader, Select, Spinner, Textarea } from '../components/shared/UI';
+import { Badge, Button, Card, Field, Input, PageHeader, Select, Spinner, Textarea } from '../components/shared/UI';
 import { facultyApi, userApi } from '../utils/api';
 import { useAuth } from '../hooks/useAuth';
 import { uiStyles } from '../shared/ui/styleHelpers';
@@ -1009,6 +1009,16 @@ function FacultyQuizzes() {
   const [selectedQuizId, setSelectedQuizId] = useState<number | null>(null);
   const [quizDetail, setQuizDetail] = useState<{ quiz: Record<string, unknown>; questions: Record<string, unknown>[] } | null>(null);
   const [editingQuestions, setEditingQuestions] = useState<Record<number, EditableQuizQuestion>>({});
+  const [reviewConfirmed, setReviewConfirmed] = useState(false);
+  const [addQuestionDraft, setAddQuestionDraft] = useState<EditableQuizQuestion>({
+    id: 0,
+    question_text: '',
+    question_type: 'mcq',
+    correct_answer: '',
+    points: 1,
+    options: ['', '', '', ''],
+    citations: [],
+  });
 
   const filteredQuizzes = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -1093,10 +1103,14 @@ function FacultyQuizzes() {
 
   const generateQuiz = async () => {
     if (!courseId) return;
+    if (!manual.title.trim()) {
+      toast.error('Quiz title is required before generating.');
+      return;
+    }
     setGenerating(true);
     try {
-      await facultyApi.generateQuiz(Number(courseId), {
-        title: manual.title || 'Generated Quiz',
+      const result = await facultyApi.generateQuiz(Number(courseId), {
+        title: manual.title.trim(),
         difficulty: manual.difficulty,
         question_count: Math.max(1, Number(manual.quiz_length) || 1),
         quiz_length: Math.max(1, Number(manual.quiz_length) || 1),
@@ -1107,7 +1121,11 @@ function FacultyQuizzes() {
         attempts_allowed: Number(manual.attempts_allowed),
       });
       toast.success('RAG quiz draft generated');
+      const createdId = Number(result?.data?.assessment?.id ?? 0);
       load();
+      if (createdId) {
+        await loadQuizDetail(createdId);
+      }
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Quiz generation failed';
       toast.error(msg);
@@ -1118,10 +1136,20 @@ function FacultyQuizzes() {
 
   const publish = async (assessmentId: number, needsReview: boolean) => {
     if (!courseId) return;
+    if (selectedQuizId !== assessmentId) {
+      toast.error('Open the quiz and review its questions before publishing.');
+      return;
+    }
+    if (!reviewConfirmed) {
+      toast.error('Confirm quiz review before publishing.');
+      return;
+    }
     try {
       await facultyApi.publishQuiz(Number(courseId), assessmentId, { force_override: !needsReview });
       toast.success('Quiz published');
+      setReviewConfirmed(false);
       load();
+      await loadQuizDetail(assessmentId);
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Publish failed';
       toast.error(msg);
@@ -1131,6 +1159,7 @@ function FacultyQuizzes() {
   const loadQuizDetail = async (assessmentId: number) => {
     if (!courseId) return;
     setSelectedQuizId(assessmentId);
+    setReviewConfirmed(false);
     const result = await facultyApi.getCourseQuizDetail(Number(courseId), assessmentId);
     setQuizDetail(result.data);
     const mapped: Record<number, EditableQuizQuestion> = {};
@@ -1200,6 +1229,49 @@ function FacultyQuizzes() {
       citations: payload.citations,
     });
     toast.success('Question saved');
+    await loadQuizDetail(selectedQuizId);
+    load();
+  };
+
+  const deleteQuestion = async (questionId: number) => {
+    if (!courseId || !selectedQuizId) return;
+    if (!window.confirm('Delete this question from the quiz?')) return;
+    await facultyApi.deleteQuizQuestion(Number(courseId), selectedQuizId, questionId);
+    toast.success('Question deleted');
+    await loadQuizDetail(selectedQuizId);
+    load();
+  };
+
+  const addQuestionToQuiz = async () => {
+    if (!courseId || !selectedQuizId) return;
+    if (!addQuestionDraft.question_text.trim()) {
+      toast.error('Enter a question first.');
+      return;
+    }
+    const trimmedOptions = (addQuestionDraft.options ?? []).map((v) => String(v).trim()).filter(Boolean);
+    const payload = {
+      question_text: addQuestionDraft.question_text.trim(),
+      question_type: addQuestionDraft.question_type,
+      correct_answer: addQuestionDraft.question_type === 'true_false'
+        ? (addQuestionDraft.correct_answer === 'false' ? 'false' : 'true')
+        : addQuestionDraft.correct_answer,
+      points: addQuestionDraft.points,
+      options: addQuestionDraft.question_type === 'mcq' || addQuestionDraft.question_type === 'multiple_select'
+        ? trimmedOptions
+        : (addQuestionDraft.question_type === 'true_false' ? ['true', 'false'] : []),
+      citations: addQuestionDraft.citations ?? [],
+    };
+    await facultyApi.addQuizQuestion(Number(courseId), selectedQuizId, payload);
+    toast.success('Question added');
+    setAddQuestionDraft({
+      id: 0,
+      question_text: '',
+      question_type: 'mcq',
+      correct_answer: '',
+      points: 1,
+      options: ['', '', '', ''],
+      citations: [],
+    });
     await loadQuizDetail(selectedQuizId);
     load();
   };
@@ -1455,8 +1527,7 @@ function FacultyQuizzes() {
               </div>
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <Button size="sm" variant="secondary" onClick={() => loadQuizDetail(Number(q.id))}>Edit</Button>
-              {!q.is_published && <Button size="sm" onClick={() => publish(Number(q.id), Boolean(q.needs_review))}>Publish</Button>}
+              <Button size="sm" variant="secondary" onClick={() => loadQuizDetail(Number(q.id))}>{q.is_published ? 'View' : 'Review / Edit'}</Button>
               <Button size="sm" variant="secondary" onClick={() => duplicateQuiz(Number(q.id))}>Duplicate</Button>
               <Button size="sm" variant="ghost" onClick={() => deleteQuiz(Number(q.id))}>Delete</Button>
             </div>
@@ -1467,8 +1538,30 @@ function FacultyQuizzes() {
         <Card style={{ marginTop: 12 }}>
           <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>Quiz Builder • {String(quizDetail.quiz?.title ?? '')}</h3>
           <p style={{ marginTop: 0, color: 'var(--text-muted)', fontSize: 13 }}>
-            Edit each question, set answers, and regenerate specific questions from current course uploads.
+            Review the generated questions, edit them, delete any weak ones, add manual questions, then publish after verification.
           </p>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', color: 'var(--text-secondary)', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={reviewConfirmed}
+                onChange={(e) => setReviewConfirmed(e.target.checked)}
+                disabled={Boolean(quizDetail.quiz?.is_published)}
+              />
+              I have reviewed this quiz and verified the questions
+            </label>
+            {quizDetail.quiz?.is_published ? (
+              <Badge>Published</Badge>
+            ) : (
+              <Button
+                size="sm"
+                onClick={() => publish(selectedQuizId, Boolean(quizDetail.quiz?.needs_review))}
+                disabled={!reviewConfirmed}
+              >
+                Publish Reviewed Quiz
+              </Button>
+            )}
+          </div>
           {(quizDetail.questions ?? []).map((q) => (
             <div key={String(q.id)} style={{ borderBottom: '1px solid var(--border-subtle)', padding: '8px 0' }}>
               <Input
@@ -1513,12 +1606,70 @@ function FacultyQuizzes() {
                   />
                 ))}
               </div>
-              <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+              <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <Button size="sm" onClick={() => saveQuestion(Number(q.id))}>Save Question</Button>
-                <Button size="sm" variant="secondary" onClick={() => regenerateQuestion(Number(q.id))}>Regenerate This Question</Button>
+                {!quizDetail.quiz?.is_published && <Button size="sm" variant="secondary" onClick={() => regenerateQuestion(Number(q.id))}>Regenerate This Question</Button>}
+                {!quizDetail.quiz?.is_published && <Button size="sm" variant="ghost" onClick={() => deleteQuestion(Number(q.id))}>Delete Question</Button>}
               </div>
             </div>
           ))}
+          {!quizDetail.quiz?.is_published && (
+            <div style={{ borderTop: '1px solid var(--border-subtle)', marginTop: 12, paddingTop: 12 }}>
+              <h4 style={{ marginTop: 0, color: 'var(--text-primary)' }}>Add Manual Question To This Quiz</h4>
+              <Field label="Question text">
+                <Textarea
+                  value={addQuestionDraft.question_text}
+                  onChange={(e) => setAddQuestionDraft((prev) => ({ ...prev, question_text: e.target.value }))}
+                />
+              </Field>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 120px 1fr', gap: 8 }}>
+                <Select
+                  value={addQuestionDraft.question_type}
+                  onChange={(e) => setAddQuestionDraft((prev) => ({
+                    ...prev,
+                    question_type: e.target.value,
+                    options: e.target.value === 'true_false' ? ['true', 'false'] : prev.options,
+                  }))}
+                >
+                  <option value="mcq">MCQ</option>
+                  <option value="multiple_select">Multiple Select</option>
+                  <option value="true_false">True / False</option>
+                  <option value="short_answer">Short Answer</option>
+                  <option value="long_answer">Long Answer</option>
+                </Select>
+                <Input
+                  type="number"
+                  value={String(addQuestionDraft.points)}
+                  onChange={(e) => setAddQuestionDraft((prev) => ({ ...prev, points: Number(e.target.value) || 1 }))}
+                  placeholder="Points"
+                />
+                <Input
+                  value={addQuestionDraft.correct_answer}
+                  onChange={(e) => setAddQuestionDraft((prev) => ({ ...prev, correct_answer: e.target.value }))}
+                  placeholder="Correct answer"
+                />
+              </div>
+              {(addQuestionDraft.question_type === 'mcq' || addQuestionDraft.question_type === 'multiple_select') && (
+                <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
+                  {addQuestionDraft.options.map((opt, optIdx) => (
+                    <Input
+                      key={`new-${optIdx}`}
+                      value={opt}
+                      onChange={(e) => setAddQuestionDraft((prev) => {
+                        const next = [...prev.options];
+                        next[optIdx] = e.target.value;
+                        return { ...prev, options: next };
+                      })}
+                      placeholder={`Option ${optIdx + 1}`}
+                    />
+                  ))}
+                </div>
+              )}
+              <div style={{ marginTop: 8 }}>
+                <Button size="sm" onClick={addQuestionToQuiz}>Add Question To Quiz</Button>
+              </div>
+            </div>
+          )}
         </Card>
       )}
     </CourseFrame>
