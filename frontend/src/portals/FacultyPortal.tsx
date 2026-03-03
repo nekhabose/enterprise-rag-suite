@@ -1019,6 +1019,9 @@ function FacultyQuizzes() {
     options: ['', '', '', ''],
     citations: [],
   });
+  const targetQuestionCount = Math.max(1, Number(manual.quiz_length) || 1);
+  const canCreateDraft = Boolean(manual.title.trim() && manual.due_at);
+  const manualQuestionProgress = `${questions.length} / ${targetQuestionCount}`;
 
   const filteredQuizzes = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -1055,9 +1058,8 @@ function FacultyQuizzes() {
   useEffect(() => { load(); }, [courseId, search]);
 
   const addQuestion = () => {
-    const targetLen = Math.max(1, Number(manual.quiz_length) || 1);
-    if (questions.length >= targetLen) {
-      toast.error(`Quiz length is ${targetLen}. Increase quiz length to add more questions.`);
+    if (questions.length >= targetQuestionCount) {
+      toast.error(`Quiz length is ${targetQuestionCount}. Increase the required number of questions to add more.`);
       return;
     }
     setQuestions((prev) => [...prev, { question_text: '', question_type: 'mcq', correct_answer: '', correct_answers: [], options: ['', '', '', ''], points: 1 }]);
@@ -1068,8 +1070,16 @@ function FacultyQuizzes() {
   };
 
   const createManual = async () => {
-    if (!courseId || !manual.title.trim()) return;
-    const quizLength = Math.max(1, Number(manual.quiz_length) || 1);
+    if (!courseId) return;
+    if (!manual.title.trim()) {
+      toast.error('Quiz name is required.');
+      return;
+    }
+    if (!manual.due_at) {
+      toast.error('Last day to submit is required.');
+      return;
+    }
+    const quizLength = targetQuestionCount;
     const normalizedQuestions = questions.map((q) => {
       const cleanedOptions = (q.options ?? []).map((o) => String(o).trim()).filter(Boolean);
       if (q.question_type === 'true_false') {
@@ -1104,7 +1114,11 @@ function FacultyQuizzes() {
   const generateQuiz = async () => {
     if (!courseId) return;
     if (!manual.title.trim()) {
-      toast.error('Quiz title is required before generating.');
+      toast.error('Quiz name is required before generating.');
+      return;
+    }
+    if (!manual.due_at) {
+      toast.error('Last day to submit is required before generating.');
       return;
     }
     setGenerating(true);
@@ -1112,8 +1126,8 @@ function FacultyQuizzes() {
       const result = await facultyApi.generateQuiz(Number(courseId), {
         title: manual.title.trim(),
         difficulty: manual.difficulty,
-        question_count: Math.max(1, Number(manual.quiz_length) || 1),
-        quiz_length: Math.max(1, Number(manual.quiz_length) || 1),
+        question_count: targetQuestionCount,
+        quiz_length: targetQuestionCount,
         question_types: ['multiple_choice', 'true_false', 'short_answer'],
         document_ids: docIds,
         due_at: manual.due_at || null,
@@ -1276,42 +1290,126 @@ function FacultyQuizzes() {
     load();
   };
 
+  const quizPublishState = useMemo(() => {
+    const quiz = quizDetail?.quiz;
+    const provenance = ((quiz?.provenance as Record<string, unknown> | undefined) ?? {});
+    const intendedCount = Number(provenance.quiz_length ?? quiz?.question_count ?? 0);
+    const requiredCount = Number.isFinite(intendedCount) && intendedCount > 0 ? intendedCount : 0;
+    const actualCount = (quizDetail?.questions ?? []).length;
+    const hasDueDate = Boolean(quiz?.due_at);
+    const hasTitle = Boolean(String(quiz?.title ?? '').trim());
+    const countMatches = requiredCount > 0 ? actualCount === requiredCount : actualCount > 0;
+    let blocker = '';
+    if (!hasTitle) blocker = 'Quiz name is required.';
+    else if (!hasDueDate) blocker = 'Set the last day to submit before publishing.';
+    else if (!countMatches) blocker = `Quiz must contain exactly ${requiredCount} questions. Current: ${actualCount}.`;
+    return {
+      requiredCount,
+      actualCount,
+      hasDueDate,
+      hasTitle,
+      countMatches,
+      canPublish: hasTitle && hasDueDate && countMatches,
+      blocker,
+    };
+  }, [quizDetail]);
+
   return (
     <CourseFrame section="Quizzes">
       <Card>
         <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>Create Course Quiz</h3>
         <p style={{ marginTop: 0, color: 'var(--text-muted)', fontSize: 13 }}>
-          All actions here are scoped to this selected course.
+          Build a course-scoped draft with a required quiz name, submission deadline, and exact question count.
         </p>
         <div style={{ display: 'grid', gap: 8 }}>
-          <Input value={manual.title} onChange={(e) => setManual((p) => ({ ...p, title: e.target.value }))} placeholder="Quiz title" />
+          <Field label="Quiz Name (required)">
+            <Input value={manual.title} onChange={(e) => setManual((p) => ({ ...p, title: e.target.value }))} placeholder="Example: Week 2 Python Foundations Quiz" />
+          </Field>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-            <Select value={manual.difficulty} onChange={(e) => setManual((p) => ({ ...p, difficulty: e.target.value }))}>
-              <option value="easy">Easy</option>
-              <option value="medium">Medium</option>
-              <option value="hard">Hard</option>
-            </Select>
-            <Input type="datetime-local" value={manual.due_at} onChange={(e) => setManual((p) => ({ ...p, due_at: e.target.value }))} />
-            <Input value={manual.time_limit_minutes} onChange={(e) => setManual((p) => ({ ...p, time_limit_minutes: e.target.value }))} placeholder="Time limit (minutes)" />
+            <Field label="Difficulty">
+              <Select value={manual.difficulty} onChange={(e) => setManual((p) => ({ ...p, difficulty: e.target.value }))}>
+                <option value="easy">Easy</option>
+                <option value="medium">Medium</option>
+                <option value="hard">Hard</option>
+              </Select>
+            </Field>
+            <Field label="Last Day To Submit (required)">
+              <Input type="datetime-local" value={manual.due_at} onChange={(e) => setManual((p) => ({ ...p, due_at: e.target.value }))} />
+            </Field>
+            <Field label="Time Limit (minutes)">
+              <Input value={manual.time_limit_minutes} onChange={(e) => setManual((p) => ({ ...p, time_limit_minutes: e.target.value }))} placeholder="30" />
+            </Field>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <Input
-              type="number"
-              min={1}
-              max={20}
-              value={manual.quiz_length}
-              onChange={(e) => setManual((p) => ({ ...p, quiz_length: e.target.value }))}
-              placeholder="Quiz length (questions)"
-            />
-            <Input
-              value={manual.attempts_allowed}
-              onChange={(e) => setManual((p) => ({ ...p, attempts_allowed: e.target.value }))}
-              placeholder="Attempts allowed"
-            />
+            <Field label="Required Number Of Questions">
+              <Input
+                type="number"
+                min={1}
+                max={20}
+                value={manual.quiz_length}
+                onChange={(e) => {
+                  const rawValue = Math.max(1, Math.min(20, Number(e.target.value) || 1));
+                  const nextValue = String(rawValue);
+                  setManual((p) => ({ ...p, quiz_length: nextValue }));
+                  setQuestions((prev) => {
+                    if (prev.length <= rawValue) return prev;
+                    toast(`Question count trimmed to ${rawValue} to match the new quiz length.`);
+                    return prev.slice(0, rawValue);
+                  });
+                }}
+                placeholder="4"
+              />
+            </Field>
+            <Field label="Attempts Allowed">
+              <Input
+                value={manual.attempts_allowed}
+                onChange={(e) => setManual((p) => ({ ...p, attempts_allowed: e.target.value }))}
+                placeholder="1"
+              />
+            </Field>
           </div>
-          <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 12 }}>
-            Target length is exact. Manual and RAG modes both enforce this question count.
-          </p>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+            gap: 8,
+            padding: 10,
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 12,
+            background: 'var(--surface-subtle)',
+          }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Quiz Name</div>
+              <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{manual.title.trim() || 'Required before draft creation'}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Submission Deadline</div>
+              <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{manual.due_at ? new Date(manual.due_at).toLocaleString() : 'Required before publish'}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Question Count</div>
+              <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{targetQuestionCount} questions exactly</div>
+            </div>
+          </div>
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 8,
+            padding: '10px 12px',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 10,
+            background: 'var(--bg-surface)',
+          }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                Manual Draft Progress
+              </div>
+              <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
+                Add exactly the required number of questions before saving or publishing.
+              </div>
+            </div>
+            <Badge>{manualQuestionProgress} questions</Badge>
+          </div>
           <div>
             <div style={{ color: 'var(--text-secondary)', fontSize: 12, marginBottom: 6 }}>RAG Source Files</div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -1346,7 +1444,7 @@ function FacultyQuizzes() {
             <Card key={idx} style={{ background: 'var(--surface-subtle)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
                 <strong style={{ color: 'var(--text-primary)' }}>Question {idx + 1}</strong>
-                <Button size="sm" variant="ghost" onClick={() => removeQuestion(idx)}>Remove</Button>
+                <Button size="sm" variant="ghost" onClick={() => removeQuestion(idx)} disabled={questions.length <= 1}>Remove</Button>
               </div>
               <Field label="Prompt">
                 <Textarea value={q.question_text} onChange={(e) => setQuestions((prev) => prev.map((it, i) => i === idx ? { ...it, question_text: e.target.value } : it))} />
@@ -1482,8 +1580,8 @@ function FacultyQuizzes() {
           ))}
           <div style={{ display: 'flex', gap: 8 }}>
             <Button variant="secondary" onClick={addQuestion}>Add Question</Button>
-            <Button onClick={createManual}>Save Manual Draft</Button>
-            <Button variant="secondary" loading={generating} onClick={generateQuiz}>Generate Quiz (RAG)</Button>
+            <Button onClick={createManual} disabled={!canCreateDraft}>Save Manual Draft</Button>
+            <Button variant="secondary" loading={generating} onClick={generateQuiz} disabled={!canCreateDraft}>Generate Quiz (RAG)</Button>
           </div>
         </div>
       </Card>
@@ -1540,6 +1638,49 @@ function FacultyQuizzes() {
           <p style={{ marginTop: 0, color: 'var(--text-muted)', fontSize: 13 }}>
             Review the generated questions, edit them, delete any weak ones, add manual questions, then publish after verification.
           </p>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+            gap: 8,
+            marginBottom: 12,
+            padding: 10,
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 12,
+            background: 'var(--surface-subtle)',
+          }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Quiz Name</div>
+              <div style={{ color: quizPublishState.hasTitle ? 'var(--text-primary)' : 'var(--danger-600)', fontWeight: 600 }}>
+                {String(quizDetail.quiz?.title ?? '').trim() || 'Missing'}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Last Day To Submit</div>
+              <div style={{ color: quizPublishState.hasDueDate ? 'var(--text-primary)' : 'var(--danger-600)', fontWeight: 600 }}>
+                {quizDetail.quiz?.due_at ? new Date(String(quizDetail.quiz.due_at)).toLocaleString() : 'Missing'}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Question Count</div>
+              <div style={{ color: quizPublishState.countMatches ? 'var(--text-primary)' : 'var(--danger-600)', fontWeight: 600 }}>
+                {quizPublishState.actualCount} / {quizPublishState.requiredCount || quizPublishState.actualCount}
+              </div>
+            </div>
+          </div>
+          {!quizPublishState.canPublish && !quizDetail.quiz?.is_published && (
+            <div style={{
+              marginBottom: 12,
+              padding: '10px 12px',
+              borderRadius: 10,
+              border: '1px solid rgba(217, 48, 37, 0.2)',
+              background: 'rgba(217, 48, 37, 0.08)',
+              color: 'var(--danger-700)',
+              fontSize: 13,
+              fontWeight: 600,
+            }}>
+              Publish blocked: {quizPublishState.blocker}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
             <label style={{ display: 'flex', gap: 8, alignItems: 'center', color: 'var(--text-secondary)', fontSize: 13 }}>
               <input
@@ -1556,7 +1697,7 @@ function FacultyQuizzes() {
               <Button
                 size="sm"
                 onClick={() => publish(selectedQuizId, Boolean(quizDetail.quiz?.needs_review))}
-                disabled={!reviewConfirmed}
+                disabled={!reviewConfirmed || !quizPublishState.canPublish}
               >
                 Publish Reviewed Quiz
               </Button>

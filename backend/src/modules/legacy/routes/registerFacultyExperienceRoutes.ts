@@ -1323,8 +1323,27 @@ export function registerFacultyExperienceRoutes(deps: LegacyRouteDeps) {
         [assessmentId, courseId],
       );
       if (!settings.rows.length) return res.status(404).json({ error: 'Quiz settings not found' });
+      const currentSettings = settings.rows[0];
+      const effectiveDueAt = req.body?.due_at ?? currentSettings.due_at ?? null;
+      if (!effectiveDueAt) {
+        return res.status(400).json({ error: 'Quiz due date is required before publishing' });
+      }
       if (settings.rows[0].needs_review && !forceOverride) {
         return res.status(400).json({ error: 'Quiz has questions without citations and needs review before publishing' });
+      }
+      const questionStats = await pool.query(
+        'SELECT COUNT(*)::int AS question_count FROM questions WHERE assessment_id = $1',
+        [assessmentId],
+      );
+      const actualCount = Number(questionStats.rows[0]?.question_count ?? 0);
+      const provenance = typeof currentSettings.provenance === 'object' && currentSettings.provenance !== null
+        ? currentSettings.provenance
+        : {};
+      const expectedCount = Number((provenance as Record<string, unknown>).quiz_length ?? actualCount);
+      if (expectedCount > 0 && actualCount !== expectedCount) {
+        return res.status(400).json({
+          error: `Quiz must contain exactly ${expectedCount} questions before publishing. Current: ${actualCount}.`,
+        });
       }
       const updated = await pool.query(
         `UPDATE assessment_settings
