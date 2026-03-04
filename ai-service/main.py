@@ -177,6 +177,197 @@ def _normalize_chunking(value: Optional[str]) -> str:
     return mapping.get(raw, "semantic")
 
 
+def _extract_json_block(text: str) -> Optional[dict]:
+    if not text:
+        return None
+    cleaned = text.strip()
+    candidates = [cleaned]
+    if "```json" in cleaned:
+        candidates.append(cleaned.split("```json", 1)[1].split("```", 1)[0].strip())
+    if "```" in cleaned:
+        candidates.append(cleaned.split("```", 1)[1].split("```", 1)[0].strip())
+
+    first_brace = cleaned.find("{")
+    last_brace = cleaned.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        candidates.append(cleaned[first_brace:last_brace + 1])
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            continue
+    return None
+
+
+def _quiz_source_facts(topic: str) -> List[dict]:
+    lines = [line.strip() for line in str(topic or "").splitlines() if line.strip()]
+    facts: List[dict] = []
+    for line in lines:
+        if " | " in line and ":" in line:
+            label, snippet = line.split(" | ", 1)
+            answer = re.split(r"(?<=[.!?])\s+", snippet.strip())[0].strip() or snippet.strip()[:120]
+            facts.append({
+                "label": label.strip(),
+                "snippet": snippet.strip(),
+                "answer": answer[:160],
+            })
+    if facts:
+        return facts
+
+    fallback = re.sub(r"\s+", " ", topic or "").strip()
+    if fallback:
+        return [{
+            "label": "Course source",
+            "snippet": fallback[:220],
+            "answer": (re.split(r"(?<=[.!?])\s+", fallback)[0].strip() or fallback[:120])[:160],
+        }]
+    return [{
+        "label": "Course source",
+        "snippet": "No source snippet available.",
+        "answer": "No grounded answer available.",
+    }]
+
+
+def _deterministic_quiz_questions(topic: str, num_questions: int, question_type: str) -> List[dict]:
+    facts = _quiz_source_facts(topic)
+    questions: List[dict] = []
+    for idx in range(num_questions):
+        fact = facts[idx % len(facts)]
+        if question_type == "mcq":
+            correct = fact["answer"] or fact["label"]
+            options = [correct, f"{correct} overview", "Unrelated topic", f"{correct} basics"]
+            questions.append({
+                "id": idx + 1,
+                "question": f"According to {fact['label']}, which option best matches the key concept?",
+                "type": "mcq",
+                "options": options[:4],
+                "correct_answer": correct,
+                "citations": [{"source": fact["label"], "snippet": fact["snippet"][:220]}],
+            })
+        elif question_type == "true_false":
+            questions.append({
+                "id": idx + 1,
+                "question": f"True or False: {fact['label']} covers \"{fact['answer']}\".",
+                "type": "true_false",
+                "options": ["true", "false"],
+                "correct_answer": "true",
+                "citations": [{"source": fact["label"], "snippet": fact["snippet"][:220]}],
+            })
+        else:
+            questions.append({
+                "id": idx + 1,
+                "question": f"Based on {fact['label']}, what is a key idea discussed?",
+                "type": "short_answer",
+                "options": [],
+                "correct_answer": fact["answer"],
+                "citations": [{"source": fact["label"], "snippet": fact["snippet"][:220]}],
+            })
+    return questions
+
+
+def _generate_quiz_with_llm(body: "QuizRequest") -> dict:
+    cfg = rag_engine._get_tenant_ai_settings(body.tenant_id)
+    provider = str(cfg.get("llm_provider") or os.getenv("RAG_LLM_PROVIDER", "groq")).strip().lower()
+    model = cfg.get("llm_model")
+
+    prompt = (
+        "You are generating a quiz draft for a faculty author.\n"
+        "Use ONLY the provided grounded course source excerpts.\n"
+        "Return ONLY valid JSON with this exact shape:\n"
+        "{"
+        "\"questions\":[{"
+        "\"question\":\"...\","
+        "\"type\":\"mcq|true_false|short_answer\","
+        "\"options\":[\"...\"],"
+        "\"correct_answer\":\"...\","
+        "\"citations\":[{\"source\":\"...\",\"snippet\":\"...\"}]"
+        "}]"
+        "}\n"
+        f"Difficulty: {body.difficulty}\n"
+        f"Question type: {body.question_type}\n"
+        f"Number of questions: {body.num_questions}\n"
+        "Rules:\n"
+        "- Each question must be grounded in the supplied source excerpts.\n"
+        "- Every question must include at least one citation.\n"
+        "- For mcq, provide exactly 4 options and a correct_answer that matches one option.\n"
+        "- For true_false, options must be ['true','false'].\n"
+        "- For short_answer, options must be [].\n"
+        "- Do not use filler text like 'sample question'.\n\n"
+        f"Grounded course context:\n{body.topic}"
+    )
+
+    raw = rag_engine.llm.answer(
+        prompt,
+        provider=provider,
+        model=model,
+        temperature=0.2,
+        max_tokens=min(2200, 260 * body.num_questions),
+    )
+    parsed = _extract_json_block(raw)
+    if not parsed:
+        raise RuntimeError("LLM did not return valid JSON")
+
+    raw_questions = parsed.get("questions")
+    if not isinstance(raw_questions, list) or not raw_questions:
+        raise RuntimeError("LLM returned no questions")
+
+    normalized: List[dict] = []
+    fallback_facts = _quiz_source_facts(body.topic)
+    for idx, item in enumerate(raw_questions[:body.num_questions]):
+        if not isinstance(item, dict):
+            continue
+        fact = fallback_facts[idx % len(fallback_facts)]
+        qtype = str(item.get("type") or body.question_type).strip().lower()
+        if qtype not in {"mcq", "true_false", "short_answer"}:
+            qtype = body.question_type
+        question = re.sub(r"\s+", " ", str(item.get("question") or "").strip())
+        if not question or "sample question" in question.lower():
+            raise RuntimeError("LLM returned placeholder question text")
+        options = item.get("options")
+        if not isinstance(options, list):
+            options = []
+        options = [re.sub(r"\s+", " ", str(option).strip()) for option in options if str(option).strip()]
+        if qtype == "mcq":
+            if len(options) < 4:
+                options = (options + [fact["answer"], f"{fact['answer']} overview", "Unrelated topic", f"{fact['answer']} basics"])[:4]
+            else:
+                options = options[:4]
+        elif qtype == "true_false":
+            options = ["true", "false"]
+        else:
+            options = []
+        correct = re.sub(r"\s+", " ", str(item.get("correct_answer") or "").strip())
+        if not correct:
+            correct = "true" if qtype == "true_false" else fact["answer"]
+        citations = item.get("citations")
+        if not isinstance(citations, list) or not citations:
+            citations = [{"source": fact["label"], "snippet": fact["snippet"][:220]}]
+        normalized.append({
+            "id": idx + 1,
+            "question": question,
+            "type": qtype,
+            "options": options,
+            "correct_answer": correct,
+            "citations": citations,
+        })
+
+    if not normalized:
+        raise RuntimeError("LLM returned unusable questions")
+    while len(normalized) < body.num_questions:
+        normalized.extend(_deterministic_quiz_questions(body.topic, body.num_questions - len(normalized), body.question_type))
+    return {
+        "questions": normalized[:body.num_questions],
+        "meta": {
+            "provider_used": provider,
+            "model_used": model,
+            "llm_fallback": False,
+        },
+    }
+
+
 def _chunking_profile(strategy: str) -> dict:
     normalized = _normalize_chunking(strategy)
     profiles = {
@@ -1253,24 +1444,28 @@ async def generate_quiz(
         topic=body.topic,
         num_questions=body.num_questions,
     )
-
-    # TODO: Integrate LLM quiz generation
-    sample_questions = [
-        {
-            "id": i + 1,
-            "question": f"Sample question {i + 1} about {body.topic}",
-            "type": body.question_type,
-            "options": ["A", "B", "C", "D"] if body.question_type == "mcq" else None,
-            "correct_answer": "A" if body.question_type == "mcq" else "Sample answer",
+    warning = None
+    try:
+        generated = _generate_quiz_with_llm(body)
+    except Exception as exc:
+        warning = f"Configured LLM quiz generation failed; deterministic grounded fallback used. Details: {exc}"
+        generated = {
+            "questions": _deterministic_quiz_questions(body.topic, body.num_questions, body.question_type),
+            "meta": {
+                "provider_used": str(rag_engine._get_tenant_ai_settings(body.tenant_id).get("llm_provider") or os.getenv("RAG_LLM_PROVIDER", "groq")),
+                "model_used": rag_engine._get_tenant_ai_settings(body.tenant_id).get("llm_model"),
+                "llm_fallback": True,
+                "warning": warning,
+            },
         }
-        for i in range(body.num_questions)
-    ]
 
     return {
         "assessment_id": None,
         "topic": body.topic,
         "difficulty": body.difficulty,
-        "questions": sample_questions,
+        "questions": generated["questions"],
+        "meta": generated.get("meta", {}),
+        "warning": warning,
     }
 
 

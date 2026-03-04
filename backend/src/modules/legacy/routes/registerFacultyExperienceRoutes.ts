@@ -861,6 +861,62 @@ export function registerFacultyExperienceRoutes(deps: LegacyRouteDeps) {
     }
   });
 
+  app.post('/faculty/courses/:courseId/quizzes/:assessmentId/questions', authMiddleware, requirePermission('ASSESSMENT_WRITE'), async (req: AuthRequest, res: Response) => {
+    if (!ensureFaculty(req, res)) return;
+    const courseId = Number(req.params.courseId);
+    const assessmentId = Number(req.params.assessmentId);
+    if (!Number.isFinite(courseId) || courseId <= 0 || !Number.isFinite(assessmentId) || assessmentId <= 0) {
+      return res.status(400).json({ error: 'Invalid course or assessment ID' });
+    }
+
+    const questionText = String(req.body?.question_text ?? '').trim();
+    const questionType = String(req.body?.question_type ?? 'mcq');
+    const correctAnswer = req.body?.correct_answer ?? null;
+    const points = Math.max(1, Number(req.body?.points ?? 1) || 1);
+    const options = Array.isArray(req.body?.options) ? req.body.options : [];
+    const citations = Array.isArray(req.body?.citations) ? req.body.citations : [];
+
+    if (!questionText) return res.status(400).json({ error: 'question_text required' });
+
+    try {
+      if (!(await ensureAssignedCourse(req, res, courseId))) return;
+      const existing = await pool.query(
+        `SELECT a.id
+         FROM assessments a
+         JOIN assessment_settings s ON s.assessment_id = a.id
+         WHERE a.id = $1 AND s.course_id = $2`,
+        [assessmentId, courseId],
+      );
+      if (!existing.rows.length) return res.status(404).json({ error: 'Quiz not found' });
+
+      const inserted = await pool.query(
+        `INSERT INTO questions (assessment_id, question_text, question_type, correct_answer, options, points)
+         VALUES ($1,$2,$3,$4,$5::jsonb,$6)
+         RETURNING *`,
+        [
+          assessmentId,
+          questionText,
+          questionType,
+          correctAnswer !== null && correctAnswer !== undefined ? String(correctAnswer) : null,
+          JSON.stringify({ options, citations }),
+          points,
+        ],
+      );
+
+      await pool.query(
+        `UPDATE assessment_settings
+         SET needs_review = CASE WHEN $1 THEN true ELSE needs_review END,
+             updated_at = NOW()
+         WHERE assessment_id = $2 AND course_id = $3`,
+        [citations.length === 0, assessmentId, courseId],
+      );
+
+      return res.status(201).json({ question: inserted.rows[0] });
+    } catch {
+      return res.status(500).json({ error: 'Failed to add question' });
+    }
+  });
+
   app.post('/faculty/courses/:courseId/quizzes/manual', authMiddleware, requirePermission('ASSESSMENT_WRITE'), async (req: AuthRequest, res: Response) => {
     if (!ensureFaculty(req, res)) return;
     const courseId = Number(req.params.courseId);
